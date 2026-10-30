@@ -1,5 +1,22 @@
+
 mairix is a program for indexing and searching email messages stored in
 Maildir, MH, MMDF or mbox folders.
+
+
+This is mairix2 which stands on the shoulders of giants.
+
+
+mairix2 is a mairix0.24 (See git history) extended to 64 bit by GLM 5.3-flash
+by Florian Lohoff <f@zz.de>
+
+
+Limits removed:
+
+- 64 bit time_t (Y2038 Problem)
+- BSD MBox Size
+- Index Size
+- Messages per Mailbox
+
 
 * Indexing is fast.  It runs incrementally on new messages - any particular
   message only gets scanned once in the lifetime of the index file.
