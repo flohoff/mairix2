@@ -364,24 +364,18 @@ static int check_message_list_for_duplicates(struct msgpath_array *msgs)/*{{{*/
 }
 /*}}}*/
 
-static void emit_int(int x)/*{{{*/
+static void emit_int(size_t x)/*{{{*/
 {
-  char buf1[20], buf2[20];
+  char buf1[24], buf2[24];
   char *p, *q;
-  int neg=0;
   p = buf1;
   *p = '0'; /* In case x is zero */
-  if (x < 0) {
-    neg = 1;
-    x = -x;
-  }
   while (x) {
     *p++ = '0' + (x % 10);
     x /= 10;
   }
   p--;
   q = buf2;
-  if (neg) *q++ = '-';
   while (p >= buf1) {
     *q++ = *p--;
   }

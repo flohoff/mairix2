@@ -1,0 +1,35 @@
+# 70000 messages in one mbox: message indices beyond the old 65536
+# half-word boundary of the (mbox index | message index) packing.
+#
+# The messages with numbers 0, 65535, 65536 and 69999 carry unique body
+# markers, so each of the searches below matches exactly one message, on
+# either side of the old boundary. The database dump for this test would be
+# several megabytes, so the searches run without dump assertions and the
+# assertions are the search results themselves.
+run_generator prepare_mbox_many_messages.sh messages/mbox/many.mbox 70000
+conf_add_mbox_glob messages/mbox/many.mbox
+index_database
+
+# an empty search on the fully indexed database
+search_messages_no_dump zzzznomatch
+assert_no_more_matches
+
+# message 0 (before the boundary)
+search_messages_no_dump markerfirst
+assert_match mbox many.mbox/part.0
+assert_no_more_matches
+
+# message 65535 (the last index the old packing could represent)
+search_messages_no_dump markerbeforeboundary
+assert_match mbox many.mbox/part.65535
+assert_no_more_matches
+
+# message 65536 (the first index beyond the old boundary)
+search_messages_no_dump markerafterboundary
+assert_match mbox many.mbox/part.65536
+assert_no_more_matches
+
+# message 69999 (the last message)
+search_messages_no_dump markerlast
+assert_match mbox many.mbox/part.69999
+assert_no_more_matches

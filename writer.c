@@ -59,8 +59,10 @@ struct write_map {/*{{{*/
 
   /* Path information */
   int path_offset;
-  int mtime_offset; /* Message file mtimes (maildir/mh), mbox number (mbox) */
-  int size_offset; /* Message sizes (maildir/mh), entry in respective mbox (mbox) */
+  /* Each of the following tables holds lo words followed by a table of hi
+   * words, to store 64-bit values. */
+  int mtime_offset; /* Message file mtimes (maildir/mh), mbox start offset (mbox) */
+  int size_offset; /* Message sizes (maildir/mh), span in mbox (mbox) */
   int date_offset; /* Message dates (all folder types) */
   int tid_offset;  /* Thread group index table (all folder types) */
 
@@ -86,6 +88,15 @@ struct write_map {/*{{{*/
 };
 /*}}}*/
 
+/* Split a 64-bit value into the lo/hi word tables; the hi words live at
+ * lo_table[n] onwards */
+static void write_lo_hi(unsigned int *lo_table, int n, int i, uint64_t value)/*{{{*/
+{
+  lo_table[i] = (unsigned int) (value & 0xffffffffull);
+  lo_table[n + i] = (unsigned int) (value >> 32);
+}
+/*}}}*/
+
 static void create_rw_mapping(char *filename, size_t len, int *out_fd, char **out_data)/*{{{*/
 {
   int fd;
@@ -103,9 +114,9 @@ static void create_rw_mapping(char *filename, size_t len, int *out_fd, char **ou
     unlock_and_exit(2);
   }
 
-  if (sb.st_size < len) {
+  if (sb.st_size < (off_t) len) {
     /* Extend */
-    if (lseek(fd, len - 1, SEEK_SET) < 0) {
+    if (lseek(fd, (off_t) len - 1, SEEK_SET) < 0) {
       report_error("lseek", filename);
       unlock_and_exit(2);
     }
@@ -134,7 +145,7 @@ static void create_rw_mapping(char *filename, size_t len, int *out_fd, char **ou
 }
 /*}}}*/
 
-static int toktable_char_length(struct toktable *tab)/*{{{*/
+static size_t toktable_char_length(struct toktable *tab)/*{{{*/
 {
   int result = 0;
   int i;
@@ -147,7 +158,7 @@ static int toktable_char_length(struct toktable *tab)/*{{{*/
   return result;
 }
 /*}}}*/
-static int toktable2_char_length(struct toktable2 *tab)/*{{{*/
+static size_t toktable2_char_length(struct toktable2 *tab)/*{{{*/
 {
   int result = 0;
   int i;
@@ -161,10 +172,10 @@ static int toktable2_char_length(struct toktable2 *tab)/*{{{*/
   return result;
 }
 /*}}}*/
-static int char_length(struct database *db)/*{{{*/
+static size_t char_length(struct database *db)/*{{{*/
 {
   /* Return total length of character data to be written. */
-  int result;
+  size_t result;
   int i;
 
   result = 0;
@@ -177,7 +188,7 @@ static int char_length(struct database *db)/*{{{*/
       case MTY_DEAD:
         break;
       case MTY_MBOX:
-        result += sizeof(struct encoded_mbox_indices);
+        result += sizeof(uint64_t);
         break;
       case MTY_FILE:
       case MTY_IMAP:
@@ -209,41 +220,44 @@ static int char_length(struct database *db)/*{{{*/
 
 static void compute_mapping(struct database *db, struct write_map *map)/*{{{*/
 {
-  int total = UI_HEADER_LEN;
+  /* All values are 32-bit word offsets.  64-bit values (mtimes/offsets,
+   * sizes, dates and all character data offsets) are stored as a table of
+   * lo words followed by a table of hi words. */
+  size_t total = UI_HEADER_LEN;
 
-  map->path_offset  = total, total += db->n_msgs;
-  map->mtime_offset = total, total += db->n_msgs;
-  map->date_offset  = total, total += db->n_msgs;
-  map->size_offset  = total, total += db->n_msgs;
+  map->path_offset  = total, total += 2 * db->n_msgs; /* lo words + hi words */
+  map->mtime_offset = total, total += 2 * db->n_msgs;
+  map->date_offset  = total, total += 2 * db->n_msgs;
+  map->size_offset  = total, total += 2 * db->n_msgs;
   map->tid_offset   = total, total += db->n_msgs;
 
-  map->mbox_paths_offset = total, total += db->n_mboxen;
+  map->mbox_paths_offset = total, total += 2 * db->n_mboxen;
   map->mbox_entries_offset = total, total += db->n_mboxen;
-  map->mbox_mtime_offset = total, total += db->n_mboxen;
-  map->mbox_size_offset  = total, total += db->n_mboxen;
-  map->mbox_checksum_offset = total, total += db->n_mboxen;
+  map->mbox_mtime_offset = total, total += 2 * db->n_mboxen;
+  map->mbox_size_offset  = total, total += 2 * db->n_mboxen;
+  map->mbox_checksum_offset = total, total += 2 * db->n_mboxen;
 
-  map->to.tok_offset = total, total += db->to->n;
-  map->to.enc_offset = total, total += db->to->n;
+  map->to.tok_offset = total, total += 2 * db->to->n;
+  map->to.enc_offset = total, total += 2 * db->to->n;
 
-  map->cc.tok_offset = total, total += db->cc->n;
-  map->cc.enc_offset = total, total += db->cc->n;
+  map->cc.tok_offset = total, total += 2 * db->cc->n;
+  map->cc.enc_offset = total, total += 2 * db->cc->n;
 
-  map->from.tok_offset = total, total += db->from->n;
-  map->from.enc_offset = total, total += db->from->n;
+  map->from.tok_offset = total, total += 2 * db->from->n;
+  map->from.enc_offset = total, total += 2 * db->from->n;
 
-  map->subject.tok_offset = total, total += db->subject->n;
-  map->subject.enc_offset = total, total += db->subject->n;
+  map->subject.tok_offset = total, total += 2 * db->subject->n;
+  map->subject.enc_offset = total, total += 2 * db->subject->n;
 
-  map->body.tok_offset = total, total += db->body->n;
-  map->body.enc_offset = total, total += db->body->n;
+  map->body.tok_offset = total, total += 2 * db->body->n;
+  map->body.enc_offset = total, total += 2 * db->body->n;
 
-  map->attachment_name.tok_offset = total, total += db->attachment_name->n;
-  map->attachment_name.enc_offset = total, total += db->attachment_name->n;
+  map->attachment_name.tok_offset = total, total += 2 * db->attachment_name->n;
+  map->attachment_name.enc_offset = total, total += 2 * db->attachment_name->n;
 
-  map->msg_ids.tok_offset = total, total += db->msg_ids->n;
-  map->msg_ids.enc0_offset = total, total += db->msg_ids->n;
-  map->msg_ids.enc1_offset = total, total += db->msg_ids->n;
+  map->msg_ids.tok_offset = total, total += 2 * db->msg_ids->n;
+  map->msg_ids.enc0_offset = total, total += 2 * db->msg_ids->n;
+  map->msg_ids.enc1_offset = total, total += 2 * db->msg_ids->n;
 
   map->beyond_last_ui_offset = total;
 }
@@ -260,51 +274,51 @@ static void write_header(char *data, unsigned int *uidata, struct database *db, 
   ucdata[2] = HEADER_MAGIC2;
   ucdata[3] = HEADER_MAGIC3;
 
-  uidata[UI_ENDIAN] = 0x44332211; /* For checking reversed endianness on read */
-  uidata[UI_N_MSGS] = db->n_msgs;
-  uidata[UI_MSG_CDATA] = map->path_offset; /* offset table of ptrs to filenames */
-  uidata[UI_MSG_MTIME] = map->mtime_offset; /* offset of mtime table */
-  uidata[UI_MSG_DATE] = map->date_offset; /* offset of table of message Date: header lines as time_t */
-  uidata[UI_MSG_SIZE] = map->size_offset; /* offset of table of message sizes in bytes */
-  uidata[UI_MSG_TID] = map->tid_offset; /* offset of table of thread group numbers */
+  wr_header_slot(uidata, UI_ENDIAN, 0x44332211); /* For checking reversed endianness on read */
+  wr_header_slot(uidata, UI_N_MSGS, db->n_msgs);
+  wr_header_slot(uidata, UI_MSG_CDATA, map->path_offset); /* offset table of ptrs to filenames */
+  wr_header_slot(uidata, UI_MSG_MTIME, map->mtime_offset); /* lo words of mtime / mbox offset table */
+  wr_header_slot(uidata, UI_MSG_DATE, map->date_offset); /* lo words of Date: header lines as time_t */
+  wr_header_slot(uidata, UI_MSG_SIZE, map->size_offset); /* lo words of table of message sizes in bytes */
+  wr_header_slot(uidata, UI_MSG_TID, map->tid_offset); /* offset of table of thread group numbers */
 
-  uidata[UI_MBOX_N] = db->n_mboxen;
-  uidata[UI_MBOX_PATHS] = map->mbox_paths_offset;
-  uidata[UI_MBOX_ENTRIES] = map->mbox_entries_offset;
-  uidata[UI_MBOX_MTIME] = map->mbox_mtime_offset;
-  uidata[UI_MBOX_SIZE]  = map->mbox_size_offset;
-  uidata[UI_MBOX_CKSUM] = map->mbox_checksum_offset;
+  wr_header_slot(uidata, UI_MBOX_N, db->n_mboxen);
+  wr_header_slot(uidata, UI_MBOX_PATHS, map->mbox_paths_offset);
+  wr_header_slot(uidata, UI_MBOX_ENTRIES, map->mbox_entries_offset);
+  wr_header_slot(uidata, UI_MBOX_MTIME, map->mbox_mtime_offset); /* lo words */
+  wr_header_slot(uidata, UI_MBOX_SIZE, map->mbox_size_offset); /* lo words */
+  wr_header_slot(uidata, UI_MBOX_CKSUM, map->mbox_checksum_offset);
 
-  uidata[UI_HASH_KEY] = db->hash_key;
+  wr_header_slot(uidata, UI_HASH_KEY, db->hash_key);
 
-  uidata[UI_TO_N] = db->to->n;
-  uidata[UI_TO_TOK] = map->to.tok_offset;
-  uidata[UI_TO_ENC] = map->to.enc_offset;
+  wr_header_slot(uidata, UI_TO_N, db->to->n);
+  wr_header_slot(uidata, UI_TO_TOK, map->to.tok_offset);
+  wr_header_slot(uidata, UI_TO_ENC, map->to.enc_offset);
 
-  uidata[UI_CC_N] = db->cc->n;
-  uidata[UI_CC_TOK] = map->cc.tok_offset;
-  uidata[UI_CC_ENC] = map->cc.enc_offset;
+  wr_header_slot(uidata, UI_CC_N, db->cc->n);
+  wr_header_slot(uidata, UI_CC_TOK, map->cc.tok_offset);
+  wr_header_slot(uidata, UI_CC_ENC, map->cc.enc_offset);
 
-  uidata[UI_FROM_N] = db->from->n;
-  uidata[UI_FROM_TOK] = map->from.tok_offset;
-  uidata[UI_FROM_ENC] = map->from.enc_offset;
+  wr_header_slot(uidata, UI_FROM_N, db->from->n);
+  wr_header_slot(uidata, UI_FROM_TOK, map->from.tok_offset);
+  wr_header_slot(uidata, UI_FROM_ENC, map->from.enc_offset);
 
-  uidata[UI_SUBJECT_N] = db->subject->n;
-  uidata[UI_SUBJECT_TOK] = map->subject.tok_offset;
-  uidata[UI_SUBJECT_ENC] = map->subject.enc_offset;
+  wr_header_slot(uidata, UI_SUBJECT_N, db->subject->n);
+  wr_header_slot(uidata, UI_SUBJECT_TOK, map->subject.tok_offset);
+  wr_header_slot(uidata, UI_SUBJECT_ENC, map->subject.enc_offset);
 
-  uidata[UI_BODY_N] = db->body->n;
-  uidata[UI_BODY_TOK] = map->body.tok_offset;
-  uidata[UI_BODY_ENC] = map->body.enc_offset;
+  wr_header_slot(uidata, UI_BODY_N, db->body->n);
+  wr_header_slot(uidata, UI_BODY_TOK, map->body.tok_offset);
+  wr_header_slot(uidata, UI_BODY_ENC, map->body.enc_offset);
 
-  uidata[UI_ATTACHMENT_NAME_N] = db->attachment_name->n;
-  uidata[UI_ATTACHMENT_NAME_TOK] = map->attachment_name.tok_offset;
-  uidata[UI_ATTACHMENT_NAME_ENC] = map->attachment_name.enc_offset;
+  wr_header_slot(uidata, UI_ATTACHMENT_NAME_N, db->attachment_name->n);
+  wr_header_slot(uidata, UI_ATTACHMENT_NAME_TOK, map->attachment_name.tok_offset);
+  wr_header_slot(uidata, UI_ATTACHMENT_NAME_ENC, map->attachment_name.enc_offset);
 
-  uidata[UI_MSGID_N]    = db->msg_ids->n;
-  uidata[UI_MSGID_TOK]  = map->msg_ids.tok_offset;
-  uidata[UI_MSGID_ENC0] = map->msg_ids.enc0_offset;
-  uidata[UI_MSGID_ENC1] = map->msg_ids.enc1_offset;
+  wr_header_slot(uidata, UI_MSGID_N, db->msg_ids->n);
+  wr_header_slot(uidata, UI_MSGID_TOK, map->msg_ids.tok_offset);
+  wr_header_slot(uidata, UI_MSGID_ENC0, map->msg_ids.enc0_offset);
+  wr_header_slot(uidata, UI_MSGID_ENC1, map->msg_ids.enc1_offset);
 
   return;
 }
@@ -333,7 +347,7 @@ static char *write_type_and_flag_table(struct database *db, unsigned int *uidata
     if (msgdata->replied) cdata[i] |= FLAG_REPLIED;
     if (msgdata->flagged) cdata[i] |= FLAG_FLAGGED;
   }
-  uidata[UI_MSG_TYPE_AND_FLAGS] = cdata - data;
+  wr_header_slot(uidata, UI_MSG_TYPE_AND_FLAGS, (size_t) (cdata - data));
   return cdata + db->n_msgs;
 }
 /*}}}*/
@@ -347,18 +361,18 @@ static char *write_messages(struct database *db, struct write_map *map, unsigned
     switch (db->type[i]) {
       case MTY_FILE:
         slen = strlen(db->msgs[i].src.mpf.path);
-        uidata[map->path_offset + i] = cdata - data;
-        uidata[map->mtime_offset + i] = db->msgs[i].src.mpf.mtime;
-        uidata[map->size_offset + i] = db->msgs[i].src.mpf.size;
-        uidata[map->date_offset + i] = db->msgs[i].date;
+        write_lo_hi(uidata + map->path_offset, db->n_msgs, i, (size_t) (cdata - data));
+        write_lo_hi(uidata + map->mtime_offset, db->n_msgs, i, (uint64_t) db->msgs[i].src.mpf.mtime);
+        write_lo_hi(uidata + map->size_offset, db->n_msgs, i, db->msgs[i].src.mpf.size);
+        write_lo_hi(uidata + map->date_offset, db->n_msgs, i, (uint64_t) db->msgs[i].date);
         uidata[map->tid_offset + i]  = db->msgs[i].tid;
         memcpy(cdata, db->msgs[i].src.mpf.path, 1 + slen); /* include trailing null */
         cdata += (1 + slen);
         break;
       case MTY_IMAP:
         slen = strlen(db->msgs[i].src.mpf.path);
-        uidata[map->path_offset + i] = cdata - data;
-        uidata[map->date_offset + i] = db->msgs[i].date;
+        write_lo_hi(uidata + map->path_offset, db->n_msgs, i, (size_t) (cdata - data));
+        write_lo_hi(uidata + map->date_offset, db->n_msgs, i, (uint64_t) db->msgs[i].date);
         uidata[map->tid_offset + i]  = db->msgs[i].tid;
         memcpy(cdata, db->msgs[i].src.mpf.path, 1 + slen); /* include trailing null */
         cdata += (1 + slen);
@@ -368,18 +382,17 @@ static char *write_messages(struct database *db, struct write_map *map, unsigned
           int mbno = db->msgs[i].src.mbox.file_index;
           int msgno = db->msgs[i].src.mbox.msg_index;
           struct mbox *mb = &db->mboxen[mbno];
-          uidata[map->path_offset + i] = cdata - data;
-          uidata[map->mtime_offset + i] = mb->start[msgno];
-          uidata[map->size_offset + i] = mb->len[msgno];
-          uidata[map->date_offset + i] = db->msgs[i].date;
+          write_lo_hi(uidata + map->path_offset, db->n_msgs, i, encode_mbox_indices(mbno, msgno));
+          write_lo_hi(uidata + map->mtime_offset, db->n_msgs, i, mb->start[msgno]);
+          write_lo_hi(uidata + map->size_offset, db->n_msgs, i, mb->len[msgno]);
+          write_lo_hi(uidata + map->date_offset, db->n_msgs, i, (uint64_t) db->msgs[i].date);
           uidata[map->tid_offset + i]  = db->msgs[i].tid;
-          cdata = encode_mbox_indices(cdata, mbno, msgno);
         }
         break;
       case MTY_DEAD:
-        uidata[map->path_offset + i] = 0; /* Can't ever happen for real */
-        uidata[map->mtime_offset + i] = 0; /* For cleanliness */
-        uidata[map->size_offset + i] = 0;  /* For cleanliness */
+        write_lo_hi(uidata + map->path_offset, db->n_msgs, i, 0); /* Can't ever happen for real */
+        write_lo_hi(uidata + map->mtime_offset, db->n_msgs, i, 0); /* For cleanliness */
+        write_lo_hi(uidata + map->size_offset, db->n_msgs, i, 0);  /* For cleanliness */
         /* The following line is necessary, otherwise 'random' tid
          * information is written to the database, which can crash the search
          * functions. */
@@ -389,7 +402,7 @@ static char *write_messages(struct database *db, struct write_map *map, unsigned
   }
   if (verbose) {
     printf("Wrote %d messages (%d bytes of tables, %d bytes of text)\n",
-           db->n_msgs, 4*5*db->n_msgs, (int)(cdata - start_cdata));
+           db->n_msgs, 4*8*db->n_msgs, (int)(cdata - start_cdata));
   }
   return cdata; /* new value */
 }
@@ -412,20 +425,20 @@ static  char *write_mbox_headers(struct database *db, struct write_map *map, uns
   for (i=0; i<db->n_mboxen; i++) {
     struct mbox *mb = &db->mboxen[i];
     uidata[map->mbox_entries_offset + i] = mb->n_msgs;
-    uidata[map->mbox_mtime_offset + i] = mb->current_mtime;
-    uidata[map->mbox_size_offset  + i] = mb->current_size;
+    write_lo_hi(uidata + map->mbox_mtime_offset, db->n_mboxen, i, (uint64_t) mb->current_mtime);
+    write_lo_hi(uidata + map->mbox_size_offset, db->n_mboxen, i, mb->current_size);
     if (mb->path) {
-      uidata[map->mbox_paths_offset + i] = cdata - data;
+      write_lo_hi(uidata + map->mbox_paths_offset, db->n_mboxen, i, (size_t) (cdata - data));
       len = strlen(mb->path);
       memcpy(cdata, mb->path, 1+len);
       cdata += 1+len;
     } else {
-      uidata[map->mbox_paths_offset + i] = 0;
+      write_lo_hi(uidata + map->mbox_paths_offset, db->n_mboxen, i, 0);
     }
   }
   if (verbose) {
     printf("Wrote %d mbox headers (%d bytes of tables, %d bytes of paths)\n",
-        db->n_mboxen, 4*4*db->n_mboxen, (int)(cdata - start_cdata));
+        db->n_mboxen, 4*8*db->n_mboxen, (int)(cdata - start_cdata));
   }
   return cdata;
 }
@@ -437,7 +450,7 @@ static char * write_mbox_checksums(struct database *db, struct write_map *map, u
 
   for (i=0; i<db->n_mboxen; i++) {
     struct mbox *mb = &db->mboxen[i];
-    uidata[map->mbox_checksum_offset + i] = cdata - data;
+    write_lo_hi(uidata + map->mbox_checksum_offset, db->n_mboxen, i, (size_t) (cdata - data));
     for (j=0; j<mb->n_msgs; j++) {
       memcpy(cdata, mb->check_all[j], sizeof(checksum_t));
       cdata += sizeof(checksum_t);
@@ -492,7 +505,7 @@ static char *write_toktable(struct toktable *tab, struct write_map_toktable *map
   for (i=0; i<n; i++) {
     int dlen;
     dlen = stok[i]->match0.n;
-    uidata[map->enc_offset + i] = cdata - data;
+    write_lo_hi(uidata + map->enc_offset, n, i, (size_t) (cdata - data));
     memcpy(cdata, stok[i]->match0.msginfo, dlen);
     cdata += dlen;
     *cdata++ = 0xff; /* termination character */
@@ -537,7 +550,7 @@ static char *write_toktable2(struct toktable2 *tab, struct write_map_toktable2 *
    * a different data structure (array with no holes) */
   for (i=0; i<n; i++) {
     int slen;
-    uidata[map->tok_offset + i] = cdata - data;
+    write_lo_hi(uidata + map->tok_offset, n, i, (size_t) (cdata - data));
     slen = strlen(stok[i]->text);
     memcpy(cdata, stok[i]->text, 1 + slen);
     cdata += (1 + slen);
@@ -548,7 +561,7 @@ static char *write_toktable2(struct toktable2 *tab, struct write_map_toktable2 *
   for (i=0; i<n; i++) {
     int dlen;
     dlen = stok[i]->match0.n;
-    uidata[map->enc0_offset + i] = cdata - data;
+    write_lo_hi(uidata + map->enc0_offset, n, i, (size_t) (cdata - data));
     memcpy(cdata, stok[i]->match0.msginfo, dlen);
     cdata += dlen;
     *cdata++ = 0xff; /* termination character */
@@ -557,9 +570,8 @@ static char *write_toktable2(struct toktable2 *tab, struct write_map_toktable2 *
   for (i=0; i<n; i++) {
     int dlen;
     dlen = stok[i]->match1.n;
-    uidata[map->enc1_offset + i] = cdata - data;
-    if (dlen)
-      memcpy(cdata, stok[i]->match1.msginfo, dlen);
+    write_lo_hi(uidata + map->enc1_offset, n, i, (size_t) (cdata - data));
+    memcpy(cdata, stok[i]->match1.msginfo, dlen);
     cdata += dlen;
     *cdata++ = 0xff; /* termination character */
   }
@@ -575,7 +587,7 @@ static char *write_toktable2(struct toktable2 *tab, struct write_map_toktable2 *
 /*}}}*/
 void write_database(struct database *db, char *filename, int do_integrity_checks)/*{{{*/
 {
-  int file_len;
+  size_t file_len;
   int fd;
   char *data, *cdata;
   unsigned int *uidata;
@@ -592,11 +604,17 @@ void write_database(struct database *db, char *filename, int do_integrity_checks
   /* Work out mappings */
   compute_mapping(db, &map);
 
-  file_len = char_length(db) + (4 * map.beyond_last_ui_offset);
+  file_len = (size_t) char_length(db) + (4 * (size_t) map.beyond_last_ui_offset);
 
   create_rw_mapping(filename, file_len, &fd, &data);
   uidata = (unsigned int *) data; /* align(int) < align(page)! */
-  cdata = data + (4 * map.beyond_last_ui_offset);
+  cdata = data + (4 * (size_t) map.beyond_last_ui_offset);
+
+  /* Zero the whole UI table region.  The table writers only store the words
+   * they need (e.g. lo words of values below 2^32), so hi-word slots must be
+   * reset - stale bytes from a previous database state at the same location
+   * would otherwise be read back as part of 64-bit values. */
+  memset(uidata + UI_HEADER_LEN, 0, 4 * (size_t) (map.beyond_last_ui_offset - UI_HEADER_LEN));
 
   write_header(data, uidata, db, &map);
   cdata = write_type_and_flag_table(db, uidata, data, cdata);

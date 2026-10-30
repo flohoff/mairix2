@@ -344,7 +344,7 @@ if [ ${bad_options} = yes ]; then
   exit 1
 fi
 
-DEFS=""
+DEFS="-D_FILE_OFFSET_BITS=64"
 test_cc
 
 printf "Checking for <stdint.h> : "

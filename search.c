@@ -51,7 +51,7 @@ static void mark_hits_in_table(struct read_db *db, struct toktable_db *tt, int h
   /* mark files containing matched token */
   int idx;
   struct int_list_reader ilr;
-  read_db_int_list_reader_init(&ilr, db, tt->enc_offsets[hit_tok]);
+  read_db_int_list_reader_init(&ilr, db, rd_lo_hi(tt->enc_offsets, tt->enc_offsets_hi, hit_tok));
   while (int_list_reader_read(&ilr, &idx)) {
     assert(idx < db->n_msgs);
     hits[idx] = 1;
@@ -63,7 +63,7 @@ static void mark_hits_in_table2(struct read_db *db, struct toktable2_db *tt, int
   /* mark files containing matched token */
   int idx;
   struct int_list_reader ilr;
-  read_db_int_list_reader_init(&ilr, db, tt->enc1_offsets[hit_tok]);
+  read_db_int_list_reader_init(&ilr, db, rd_lo_hi(tt->enc1_offsets, tt->enc1_offsets_hi, hit_tok));
   while (int_list_reader_read(&ilr, &idx)) {
     assert(idx < db->n_msgs);
     hits[idx] = 1;
@@ -260,7 +260,7 @@ static void match_substring_in_table(struct read_db *db, struct toktable_db *tt,
     nr = new_array(unsigned long, 1 + max_errors);
   }
   for (i=0; i<tt->n; i++) {
-    token = get_db_token(db, tt->tok_offsets[i]);
+    token = get_db_token(db, rd_lo_hi(tt->tok_offsets, tt->tok_offsets_hi, i));
     if (!token) continue;
     switch (max_errors) {
       /* Optimise common cases for few errors to allow optimizer to keep bitmaps
@@ -308,11 +308,11 @@ static void match_substring_in_paths(struct read_db *db, char *substring, int ma
     unsigned int mbix, msgix;
     switch (rd_msg_type(db, i)) {
       case DB_MSG_FILE:
-        token = db->data + db->path_offsets[i];
+        token = db->data + rd_msg_path_offset(db, i);
         break;
       case DB_MSG_MBOX:
-        decode_mbox_indices(db->data + db->path_offsets[i], &mbix, &msgix);
-        token = db->data + db->mbox_paths_table[mbix];
+        decode_mbox_indices(rd_msg_path_offset(db, i), &mbix, &msgix);
+        token = db->data + rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, mbix);
         break;
       case DB_MSG_DEAD:
         hits[i] = 0; /* never match on dead paths */
@@ -355,7 +355,7 @@ static void match_string_in_table(struct read_db *db, struct toktable_db *tt, ch
   const char *token;
 
   for (i=0; i<tt->n; i++) {
-    token = get_db_token(db, tt->tok_offsets[i]);
+    token = get_db_token(db, rd_lo_hi(tt->tok_offsets, tt->tok_offsets_hi, i));
     if (token && !strcmp(key, token)) {
       /* get all matching files */
       mark_hits_in_table(db, tt, i, hits);
@@ -370,7 +370,7 @@ static void match_string_in_table2(struct read_db *db, struct toktable2_db *tt, 
   const char *token;
 
   for (i=0; i<tt->n; i++) {
-    token = get_db_token(db, tt->tok_offsets[i]);
+    token = get_db_token(db, rd_lo_hi(tt->tok_offsets, tt->tok_offsets_hi, i));
     if (!strcmp(key, token)) {
       /* get all matching files */
       mark_hits_in_table2(db, tt, i, hits);
@@ -378,12 +378,12 @@ static void match_string_in_table2(struct read_db *db, struct toktable2_db *tt, 
   }
 }
 /*}}}*/
-static int parse_size_expr(char *x)/*{{{*/
+static uint64_t parse_size_expr(char *x)/*{{{*/
 {
-  int result;
+  long long result;
   int n;
 
-  if (1 == sscanf(x, "%d%n", &result, &n)) {
+  if (1 == sscanf(x, "%lld%n", &result, &n)) {
     x += n;
     switch (*x) {
       case 'k':
@@ -394,18 +394,22 @@ static int parse_size_expr(char *x)/*{{{*/
       case 'M':
         result <<= 20;
         break;
+      case 'g':
+      case 'G':
+        result <<= 30;
+        break;
       default:
         break;
     }
 
-    return result;
+    return (uint64_t) result;
   } else {
     fprintf(stderr, "Could not parse message size expression <%s>\n", x);
     return -1;
   }
 }
 /*}}}*/
-static void parse_size_range(char *size_expr, int *has_start, int *start, int *has_end, int *end)/*{{{*/
+static void parse_size_range(char *size_expr, int *has_start, uint64_t *start, int *has_end, uint64_t *end)/*{{{*/
 {
   char *x = size_expr;
   char *dash;
@@ -445,7 +449,7 @@ static void parse_size_range(char *size_expr, int *has_start, int *start, int *h
 /*}}}*/
 static void find_size_matches_in_table(struct read_db *db, char *size_expr, char *hits)/*{{{*/
 {
-  int start, end;
+  uint64_t start, end;
   int has_start, has_end, start_cond, end_cond;
   int i;
 
@@ -454,15 +458,16 @@ static void find_size_matches_in_table(struct read_db *db, char *size_expr, char
   if (has_start && has_end) {
     /* Allow user to put the endpoints in backwards */
     if (start > end) {
-      int temp = start;
+      uint64_t temp = start;
       start = end;
       end = temp;
     }
   }
 
   for (i=0; i<db->n_msgs; i++) {
-    start_cond = has_start ? (db->size_table[i] > start) : 1;
-    end_cond   = has_end   ? (db->size_table[i] < end  ) : 1;
+    uint64_t size = rd_msg_size(db, i);
+    start_cond = has_start ? (size > start) : 1;
+    end_cond   = has_end   ? (size < end  ) : 1;
     if (start_cond && end_cond) {
       hits[i] = 1;
     }
@@ -491,8 +496,9 @@ static void find_date_matches_in_table(struct read_db *db, char *date_expr, char
   }
 
   for (i=0; i<db->n_msgs; i++) {
-    start_cond = has_start ? (db->date_table[i] > start) : 1;
-    end_cond   = has_end   ? (db->date_table[i] < end  ) : 1;
+    time_t date = rd_msg_date(db, i);
+    start_cond = has_start ? (date > start) : 1;
+    end_cond   = has_end   ? (date < end  ) : 1;
     if (start_cond && end_cond) {
       hits[i] = 1;
     }
@@ -582,7 +588,7 @@ static char *mk_maildir_path(int token, char *output_dir, int is_in_new,
 static char *mk_mh_path(int token, char *output_dir)/*{{{*/
 {
   char *result;
-  char uniq_buf[12];
+  char uniq_buf[16];
   int len;
 
   len = strlen(output_dir) + 12; /* oversize */
@@ -621,7 +627,7 @@ static void create_symlink(char *link_target, char *new_link)/*{{{*/
   }
 }
 /*}}}*/
-static void mbox_terminate(const unsigned char *data, int len, FILE *out)/*{{{*/
+static void mbox_terminate(const unsigned char *data, size_t len, FILE *out)/*{{{*/
 {
   if (len == 0)
     fputs("\n", out);
@@ -638,7 +644,7 @@ static void mbox_terminate(const unsigned char *data, int len, FILE *out)/*{{{*/
 static void append_file_to_mbox(const char *path, FILE *out)/*{{{*/
 {
   unsigned char *data;
-  int len;
+  size_t len;
   create_ro_mapping(path, &data, &len, MAP_DECOMPRESS_IF_APPLICABLE);
   if (data) {
     fprintf(out, "From mairix@mairix Mon Jan  1 12:34:56 1970\n");
@@ -675,36 +681,40 @@ static int had_failed_checksum;
 
 static void get_validated_mbox_msg(struct read_db *db, int msg_index,/*{{{*/
                                    int *mbox_index,
-                                   unsigned char **mbox_data, int *mbox_len,
-                                   unsigned char **msg_data,  int *msg_len)
+                                   unsigned char **mbox_data, size_t *mbox_len,
+                                   unsigned char **msg_data, size_t *msg_len)
 {
   /* msg_data==NULL if checksum mismatches */
   unsigned char *start;
   checksum_t csum;
   unsigned int mbi, msgi;
+  uint64_t msg_start_off, msg_size;
 
   *msg_data = NULL;
   *msg_len = 0;
 
-  decode_mbox_indices(db->data + db->path_offsets[msg_index], &mbi, &msgi);
+  decode_mbox_indices(rd_msg_path_offset(db, msg_index), &mbi, &msgi);
   *mbox_index = mbi;
 
-  create_ro_mapping(db->data + db->mbox_paths_table[mbi], mbox_data, mbox_len,
+  create_ro_mapping(db->data + rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, mbi), mbox_data, mbox_len,
       MAP_DECOMPRESS_IF_APPLICABLE);
   if (!*mbox_data) return;
 
-  start = *mbox_data + db->mtime_table[msg_index];
+  msg_start_off = rd_msg_start_or_mtime(db, msg_index);
+  msg_size = rd_msg_size(db, msg_index);
+
+  start = *mbox_data + msg_start_off;
 
   /* Ensure that we don't run off the end of the mmap'd file */
-  if (db->mtime_table[msg_index] >= *mbox_len)
+  if (msg_start_off >= (uint64_t) *mbox_len)
     *msg_len = 0;
-  else if (db->mtime_table[msg_index] + db->size_table[msg_index] >= *mbox_len)
-    *msg_len = *mbox_len - db->mtime_table[msg_index];
+  else if (msg_start_off + msg_size >= (uint64_t) *mbox_len)
+    *msg_len = (size_t) ((uint64_t) *mbox_len - msg_start_off);
   else
-    *msg_len = db->size_table[msg_index];
+    *msg_len = (size_t) msg_size;
 
   compute_checksum((char *)start, *msg_len, &csum);
-  if (!memcmp((db->data + db->mbox_checksum_table[mbi] + (msgi * sizeof(checksum_t))), &csum, sizeof(checksum_t))) {
+  if (!memcmp((db->data + rd_lo_hi(db->mbox_checksum_table, db->mbox_checksum_hi_table, mbi) + (msgi * sizeof(checksum_t))), &csum, sizeof(checksum_t))) {
     *msg_data = start;
   } else {
     had_failed_checksum = 1;
@@ -716,7 +726,8 @@ static void append_mboxmsg_to_mbox(struct read_db *db, int msg_index, FILE *out)
 {
   /* Need to common up code with try_copy_to_path */
   unsigned char *mbox_start, *msg_start;
-  int mbox_len, msg_len;
+  size_t mbox_len;
+  size_t msg_len;
   int mbox_index;
 
   get_validated_mbox_msg(db, msg_index, &mbox_index, &mbox_start, &mbox_len, &msg_start, &msg_len);
@@ -725,7 +736,7 @@ static void append_mboxmsg_to_mbox(struct read_db *db, int msg_index, FILE *out)
        going to be artificial anyway. */
     fprintf(out, "From mairix@mairix Mon Jan  1 12:34:56 1970\n");
     fprintf(out, "X-source-folder: %s\n",
-            db->data + db->mbox_paths_table[mbox_index]);
+            db->data + rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, mbox_index));
     fwrite(msg_start, sizeof(unsigned char), msg_len, out);
     mbox_terminate(msg_start, msg_len, out);
   }
@@ -737,7 +748,8 @@ static void append_mboxmsg_to_mbox(struct read_db *db, int msg_index, FILE *out)
 static void try_copy_to_path(struct read_db *db, int msg_index, char *target_path)/*{{{*/
 {
   unsigned char *data;
-  int mbox_len, msg_len;
+  size_t mbox_len;
+  size_t msg_len;
   int mbi;
   FILE *out;
   unsigned char *start;
@@ -748,7 +760,7 @@ static void try_copy_to_path(struct read_db *db, int msg_index, char *target_pat
     out = fopen(target_path, "wb");
     if (out) {
       fprintf(out, "X-source-folder: %s\n",
-              db->data + db->mbox_paths_table[mbi]);
+              db->data + rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, mbi));
       fwrite(start, sizeof(char), msg_len?msg_len-1:0, out);
       fclose(out);
     }
@@ -760,7 +772,7 @@ static void try_copy_to_path(struct read_db *db, int msg_index, char *target_pat
   return;
 }
 /*}}}*/
-static struct msg_src *setup_mbox_msg_src(char *filename, off_t start, size_t len)/*{{{*/
+static struct msg_src *setup_mbox_msg_src(char *filename, uint64_t start, uint64_t len)/*{{{*/
 {
   static struct msg_src result;
   result.type = MS_MBOX;
@@ -1117,7 +1129,7 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
               char *target_path;
               char *message_path;
               int is_in_new;
-              message_path = db->data + db->path_offsets[i];
+              message_path = db->data + rd_msg_path_offset(db, i);
               is_in_new = looks_like_maildir_new_p(message_path);
               target_path = mk_maildir_path(i, output_path, is_in_new, is_seen, is_replied, is_flagged);
               create_symlink(message_path, target_path);
@@ -1129,7 +1141,7 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
               char *target_path;
               target_path = mk_maildir_path(i, output_path, 0, is_seen, is_replied, is_flagged);
               GET_IMAP;
-              if (imapc) imap_fetch_message_raw(db->data + db->path_offsets[i], imapc, write_to_file, target_path);
+              if (imapc) imap_fetch_message_raw(db->data + rd_msg_path_offset(db, i), imapc, write_to_file, target_path);
               free(target_path);
             }
             break;
@@ -1152,7 +1164,7 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
           case DB_MSG_FILE:
             {
               char *target_path = mk_mh_path(results[i].m_seq_num, output_path);
-              create_symlink(db->data + db->path_offsets[i], target_path);
+              create_symlink(db->data + rd_msg_path_offset(db, i), target_path);
               free(target_path);
             }
             break;
@@ -1160,7 +1172,7 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
             {
               char *target_path = mk_mh_path(results[i].m_seq_num, output_path);
               GET_IMAP;
-              if (imapc) imap_fetch_message_raw(db->data + db->path_offsets[i], imapc, write_to_file, target_path);
+              if (imapc) imap_fetch_message_raw(db->data + rd_msg_path_offset(db, i), imapc, write_to_file, target_path);
               free(target_path);
             }
             break;
@@ -1190,13 +1202,13 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
           switch (rd_msg_type(db, i)) {
             case DB_MSG_FILE:
               {
-                append_file_to_mbox(db->data + db->path_offsets[i], out);
+                append_file_to_mbox(db->data + rd_msg_path_offset(db, i), out);
               }
               break;
             case DB_MSG_IMAP:
               {
                 GET_IMAP;
-                if (imapc) imap_fetch_message_raw(db->data + db->path_offsets[i], imapc, append_data_to_mbox, out);
+                if (imapc) imap_fetch_message_raw(db->data + rd_msg_path_offset(db, i), imapc, append_data_to_mbox, out);
               }
               break;
             case DB_MSG_MBOX:
@@ -1219,18 +1231,19 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
           case DB_MSG_FILE:
           case DB_MSG_IMAP:
             {
-              printf("%s\n", db->data + db->path_offsets[i]);
+              printf("%s\n", db->data + rd_msg_path_offset(db, i));
             }
             break;
           case DB_MSG_MBOX:
             {
               unsigned int mbix, msgix;
-              int start, len, after_end;
-              start = db->mtime_table[i];
-              len   = db->size_table[i];
+              uint64_t start, len, after_end;
+              start = rd_msg_start_or_mtime(db, i);
+              len   = rd_msg_size(db, i);
               after_end = start + len;
-              decode_mbox_indices(db->data + db->path_offsets[i], &mbix, &msgix);
-              printf("mbox:%s [%d,%d)\n", db->data + db->mbox_paths_table[mbix], start, after_end);
+              decode_mbox_indices(rd_msg_path_offset(db, i), &mbix, &msgix);
+              printf("mbox:%s [%lld,%lld)\n", db->data + rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, mbix),
+                     (long long) start, (long long) after_end);
             }
             break;
         }
@@ -1247,7 +1260,7 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
             {
               char *filename;
               printf("---------------------------------\n");
-              filename = db->data + db->path_offsets[i];
+              filename = db->data + rd_msg_path_offset(db, i);
               printf("%s\n", filename);
               parsed = make_rfc822(filename);
             }
@@ -1256,7 +1269,7 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
             {
               char *filename;
               printf("---------------------------------\n");
-              filename = db->data + db->path_offsets[i];
+              filename = db->data + rd_msg_path_offset(db, i);
               printf("%s\n", filename);
               GET_IMAP;
               parsed = imapc ? make_rfc822_from_imap(filename, imapc) : NULL;
@@ -1265,23 +1278,26 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
           case DB_MSG_MBOX:
             {
               unsigned int mbix, msgix;
-              int start, len, after_end;
+              uint64_t start, after_end;
+              uint64_t len;
               unsigned char *mbox_start, *msg_start;
-              int mbox_len, msg_len;
+              size_t mbox_len;
+              size_t msg_len;
               int mbox_index;
 
-              start = db->mtime_table[i];
-              len   = db->size_table[i];
+              start = rd_msg_start_or_mtime(db, i);
+              len   = rd_msg_size(db, i);
               after_end = start + len;
               printf("---------------------------------\n");
-              decode_mbox_indices(db->data + db->path_offsets[i], &mbix, &msgix);
-              printf("mbox:%s [%d,%d)\n", db->data + db->mbox_paths_table[mbix], start, after_end);
+              decode_mbox_indices(rd_msg_path_offset(db, i), &mbix, &msgix);
+              printf("mbox:%s [%lld,%lld)\n", db->data + rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, mbix),
+                     (long long) start, (long long) after_end);
 
               get_validated_mbox_msg(db, i, &mbox_index, &mbox_start, &mbox_len, &msg_start, &msg_len);
               if (msg_start) {
                 enum data_to_rfc822_error error;
                 struct msg_src *msg_src;
-                msg_src = setup_mbox_msg_src(db->data + db->mbox_paths_table[mbix], start, msg_len);
+                msg_src = setup_mbox_msg_src(db->data + rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, mbix), start, msg_len);
                 parsed = data_to_rfc822(msg_src, (char *) msg_start, msg_len, &error);
               }
               if (mbox_start) {
@@ -1324,9 +1340,9 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
         switch (rd_msg_type(db, i)) {
           case DB_MSG_FILE:
             {
-              int len;
+              size_t len;
               unsigned char *data;
-              create_ro_mapping(db->data + db->path_offsets[i], &data, &len,
+              create_ro_mapping(db->data + rd_msg_path_offset(db, i), &data, &len,
                   MAP_DECOMPRESS_IF_APPLICABLE);
               if (data) {
                 imap_append_new_message(imapc, output_path, data, len, is_seen, is_replied, is_flagged);
@@ -1336,13 +1352,15 @@ static int do_search(struct read_db *db, char **args, char *output_path, int sho
             break;
           case DB_MSG_IMAP:
             {
-              imap_copy_message(imapc, db->data + db->path_offsets[i], output_path);
+              imap_copy_message(imapc, db->data + rd_msg_path_offset(db, i), output_path);
             }
             break;
           case DB_MSG_MBOX:
             {
               unsigned char *start, *data;
-              int mbox_len, msg_len, mbi;
+              size_t mbox_len;
+              size_t msg_len;
+              int mbi;
               get_validated_mbox_msg(db, i, &mbi, &data, &mbox_len, &start, &msg_len);
               imap_append_new_message(imapc, output_path, start, msg_len, is_seen, is_replied, is_flagged);
               if (data) {

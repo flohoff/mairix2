@@ -1,5 +1,14 @@
+NEW IN VERSION 2.0
+==================
+* 64-bit clean: mailbox files and the index can exceed the 4 GiB limit.
+  The on-disk database format changed (version 5); existing databases must
+  be rebuilt (mairix detects this and asks for a rebuild automatically).
+  The build now compiles with -D_FILE_OFFSET_BITS=64. The per-mbox message
+  limit is raised from 65535 to just under 4 billion (mbox and message
+  indices each occupy a full 32-bit word in the database).
+
 NEW IN VERSION 0.24
-===================
+==================
 * Support fancy Content-Disposition
 * RFC5987-compliant headers
 * Support for remote IMAP folders
@@ -82,7 +91,7 @@ NEW IN VERSION 0.20
 
 NEW IN VERSION 0.19
 ===================
-* mairix.spec fixes (André Costa)
+* mairix.spec fixes (Andrï¿½ Costa)
 * bug fix: freeing of message structures (Karsten Petersen)
 * Add new -x (--excerpt-output) option, an alternative mode for searching.
   This displays the key headers from the matching messages on stdout.

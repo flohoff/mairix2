@@ -1,0 +1,11 @@
+# A database in a superseded on-disk format has to be refused (with a
+# "please rebuild" message), not misread under the current format's
+# assumptions. Both previously used format versions are covered; the
+# database is asserted to be left unchanged.
+#
+# Note: the expected output substring has to be a single word (the test
+# specification format does not support quoting).
+run_generator prepare_old_database.sh 3
+run_mairix_expect_failure rebuild --dump
+run_generator prepare_old_database.sh 4
+run_mairix_expect_failure rebuild --dump

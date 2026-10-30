@@ -290,10 +290,11 @@ static void import_toktable(const struct read_db *indb, int n_msgs, struct tokta
     nt = new(struct token);
 
     /* Recover enc_len and enc_hi from the data */
-    read_db_int_list_reader_init(&ilr, indb, in->enc_offsets[i]);
+    /* Recover enc_len and enc_hi from the data */
+    read_db_int_list_reader_init(&ilr, indb, rd_lo_hi(in->enc_offsets, in->enc_offsets_hi, i));
     int_list_reader_copy(&ilr, &(nt->match0));
 
-    text = get_db_token(indb, in->tok_offsets[i]);
+    text = get_db_token(indb, rd_lo_hi(in->tok_offsets, in->tok_offsets_hi, i));
     if (!text) {
       fprintf(stderr, "\n!!! Corrupt token offset found in database, aborting.\n");
 corrupt:
@@ -350,12 +351,12 @@ static void import_toktable2(struct read_db *indb, int n_msgs, struct toktable2_
 
     nt = new(struct token2);
 
-    read_db_int_list_reader_init(&ilr, indb, in->enc0_offsets[i]);
+    read_db_int_list_reader_init(&ilr, indb, rd_lo_hi(in->enc0_offsets, in->enc0_offsets_hi, i));
     int_list_reader_copy(&ilr, &(nt->match0));
-    read_db_int_list_reader_init(&ilr, indb, in->enc1_offsets[i]);
+    read_db_int_list_reader_init(&ilr, indb, rd_lo_hi(in->enc1_offsets, in->enc1_offsets_hi, i));
     int_list_reader_copy(&ilr, &(nt->match1));
 
-    text = get_db_token(indb, in->tok_offsets[i]);
+    text = get_db_token(indb, rd_lo_hi(in->tok_offsets, in->tok_offsets_hi, i));
     if (!text) {
       fprintf(stderr, "\n!!! Corrupt token offset found in database, aborting.\n");
       fprintf(stderr, "  Delete the database file and rebuild from scratch as a workaround\n");
@@ -407,22 +408,22 @@ struct database *new_database_from_file(char *db_filename, int do_integrity_chec
   for (i=0; i<N; i++) {
     int nn;
     if (input->mbox_paths_table[i]) {
-      result->mboxen[i].path = new_string(input->data + input->mbox_paths_table[i]);
+      result->mboxen[i].path = new_string(input->data + rd_lo_hi(input->mbox_paths_table, input->mbox_paths_hi_table, i));
     } else {
       /* mbox is dead. */
       result->mboxen[i].path = NULL;
     }
-    result->mboxen[i].file_mtime = input->mbox_mtime_table[i];
-    result->mboxen[i].file_size  = input->mbox_size_table[i];
+    result->mboxen[i].file_mtime = rd_mbox_mtime(input, i);
+    result->mboxen[i].file_size  = rd_mbox_file_size(input, i);
     nn = result->mboxen[i].n_msgs = input->mbox_entries_table[i];
     result->mboxen[i].max_msgs = nn;
     if (nn > 0) {
-      result->mboxen[i].start = new_array(off_t, nn);
-      result->mboxen[i].len   = new_array(size_t, nn);
+      result->mboxen[i].start = new_array(uint64_t, nn);
+      result->mboxen[i].len   = new_array(uint64_t, nn);
       result->mboxen[i].check_all = new_array(checksum_t, nn);
       /* Copy the entire checksum table in one go. */
       memcpy(result->mboxen[i].check_all,
-             input->data + input->mbox_checksum_table[i],
+             input->data + rd_lo_hi(input->mbox_checksum_table, input->mbox_checksum_hi_table, i),
              nn * sizeof(checksum_t));
     } else {
       result->mboxen[i].start = NULL;
@@ -439,13 +440,13 @@ struct database *new_database_from_file(char *db_filename, int do_integrity_chec
         break;
       case DB_MSG_FILE:
         result->type[i] = MTY_FILE;
-        result->msgs[i].src.mpf.path = new_string(input->data + input->path_offsets[i]);
-        result->msgs[i].src.mpf.mtime = input->mtime_table[i];
-        result->msgs[i].src.mpf.size  = input->size_table[i];
+        result->msgs[i].src.mpf.path = new_string(input->data + rd_msg_path_offset(input, i));
+        result->msgs[i].src.mpf.mtime = (time_t) rd_lo_hi(input->mtime_table, input->mtime_hi_table, i);
+        result->msgs[i].src.mpf.size  = rd_msg_size(input, i);
         break;
       case DB_MSG_IMAP:
         result->type[i] = MTY_IMAP;
-        result->msgs[i].src.mpf.path = new_string(input->data + input->path_offsets[i]);
+        result->msgs[i].src.mpf.path = new_string(input->data + rd_msg_path_offset(input, i));
         result->msgs[i].src.mpf.mtime = 0;
         result->msgs[i].src.mpf.size  = 0;
         break;
@@ -455,14 +456,14 @@ struct database *new_database_from_file(char *db_filename, int do_integrity_chec
           int n;
           struct mbox *mb;
           result->type[i] = MTY_MBOX;
-          decode_mbox_indices(input->data + input->path_offsets[i], &mbi, &msgi);
+          decode_mbox_indices(rd_msg_path_offset(input, i), &mbi, &msgi);
           result->msgs[i].src.mbox.file_index = mbi;
           mb = &result->mboxen[mbi];
           assert(mb->n_so_far == msgi);
           n = mb->n_so_far;
           result->msgs[i].src.mbox.msg_index = n;
-          mb->start[n] = input->mtime_table[i];
-          mb->len[n] = input->size_table[i];
+          mb->start[n] = rd_msg_start_or_mtime(input, i);
+          mb->len[n]   = rd_msg_size(input, i);
           ++mb->n_so_far;
         }
 
@@ -471,7 +472,7 @@ struct database *new_database_from_file(char *db_filename, int do_integrity_chec
     result->msgs[i].seen    = (input->msg_type_and_flags[i] & FLAG_SEEN)    ? 1:0;
     result->msgs[i].replied = (input->msg_type_and_flags[i] & FLAG_REPLIED) ? 1:0;
     result->msgs[i].flagged = (input->msg_type_and_flags[i] & FLAG_FLAGGED) ? 1:0;
-    result->msgs[i].date  = input->date_table[i];
+    result->msgs[i].date  = rd_msg_date(input, i);
     result->msgs[i].tid   = input->tid_table[i];
   }
 

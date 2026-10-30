@@ -40,7 +40,7 @@
 void read_db_int_list_reader_init(
   struct int_list_reader *ilr,
   const struct read_db *db,
-  unsigned int start_offset
+  uint64_t start_offset
 ) {
   ilr->accumulator = 0;
   ilr->pos = ((unsigned char *)db->data) + start_offset;
@@ -105,7 +105,7 @@ void int_list_reader_copy(struct int_list_reader *ilr, struct matches *out) {
   memcpy(out->msginfo, base, out->n);
 }
 
-const char *get_db_token(const struct read_db *db, unsigned int token_offset) {
+const char *get_db_token(const struct read_db *db, uint64_t token_offset) {
   const char *token = db->data + token_offset;
   const char *db_end = db->data + db->len;
   const char *p = token;
@@ -118,13 +118,15 @@ const char *get_db_token(const struct read_db *db, unsigned int token_offset) {
 static int read_toktable_db(char *data, int len, struct toktable_db *toktable, int start, unsigned int *uidata)/*{{{*/
 {
   char *file_end = data + len;
-  toktable->n = uidata[start];
-  toktable->tok_offsets = uidata + uidata[start+1];
-  if (((char *)(&(toktable->tok_offsets[toktable->n]))) > file_end) {
+  toktable->n = (unsigned int) rd_header_slot(uidata, start);
+  toktable->tok_offsets = uidata + rd_header_slot(uidata, start+1);
+  toktable->tok_offsets_hi = toktable->tok_offsets + toktable->n;
+  if (((char *)(&(toktable->tok_offsets_hi[toktable->n]))) > file_end) {
     return 0;
   }
-  toktable->enc_offsets = uidata + uidata[start+2];
-  if (((char *)(&(toktable->enc_offsets[toktable->n]))) > file_end) {
+  toktable->enc_offsets = uidata + rd_header_slot(uidata, start+2);
+  toktable->enc_offsets_hi = toktable->enc_offsets + toktable->n;
+  if (((char *)(&(toktable->enc_offsets_hi[toktable->n]))) > file_end) {
     return 0;
   }
   return 1;
@@ -133,17 +135,20 @@ static int read_toktable_db(char *data, int len, struct toktable_db *toktable, i
 static int read_toktable2_db(char *data, int len, struct toktable2_db *toktable, int start, unsigned int *uidata)/*{{{*/
 {
   char *file_end = data + len;
-  toktable->n = uidata[start];
-  toktable->tok_offsets = uidata + uidata[start+1];
-  if (((char *)(&(toktable->tok_offsets[toktable->n]))) > file_end) {
+  toktable->n = (unsigned int) rd_header_slot(uidata, start);
+  toktable->tok_offsets = uidata + rd_header_slot(uidata, start+1);
+  toktable->tok_offsets_hi = toktable->tok_offsets + toktable->n;
+  if (((char *)(&(toktable->tok_offsets_hi[toktable->n]))) > file_end) {
     return 0;
   }
-  toktable->enc0_offsets = uidata + uidata[start+2];
-  if (((char *)(&(toktable->enc0_offsets[toktable->n]))) > file_end) {
+  toktable->enc0_offsets = uidata + rd_header_slot(uidata, start+2);
+  toktable->enc0_offsets_hi = toktable->enc0_offsets + toktable->n;
+  if (((char *)(&(toktable->enc0_offsets_hi[toktable->n]))) > file_end) {
     return 0;
   }
-  toktable->enc1_offsets = uidata + uidata[start+3];
-  if (((char *)(&(toktable->enc1_offsets[toktable->n]))) > file_end) {
+  toktable->enc1_offsets = uidata + rd_header_slot(uidata, start+3);
+  toktable->enc1_offsets_hi = toktable->enc1_offsets + toktable->n;
+  if (((char *)(&(toktable->enc1_offsets_hi[toktable->n]))) > file_end) {
     return 0;
   }
   return 1;
@@ -151,7 +156,8 @@ static int read_toktable2_db(char *data, int len, struct toktable2_db *toktable,
 /*}}}*/
 struct read_db *open_db(char *filename)/*{{{*/
 {
-  int fd, len;
+  int fd;
+  size_t len;
   char *data;
   struct stat sb;
   struct read_db *result;
@@ -173,7 +179,7 @@ struct read_db *open_db(char *filename)/*{{{*/
   len = sb.st_size;
 
   if (len < UC_HEADER_LEN) {
-    fprintf(stderr, "Database file %s is too short, possibly corrupted (actual size %d, minimum size %d). Please rebuild.\n", filename, len, UC_HEADER_LEN);
+    fprintf(stderr, "Database file %s is too short, possibly corrupted (actual size %lu, minimum size %d). Please rebuild.\n", filename, (unsigned long) len, UC_HEADER_LEN);
     unlock_and_exit(2);
   }
 
@@ -218,26 +224,34 @@ struct read_db *open_db(char *filename)/*{{{*/
   }
   /*}}}*/
   /* {{{ Endianness check */
-  if (uidata[UI_ENDIAN] == 0x11223344) {
+  if ((unsigned int) rd_header_slot(uidata, UI_ENDIAN) == 0x11223344) {
     fprintf(stderr, "The endianness of the database is reversed for this machine\n");
     unlock_and_exit(2);
-  } else if (uidata[UI_ENDIAN] != 0x44332211) {
+  } else if ((unsigned int) rd_header_slot(uidata, UI_ENDIAN) != 0x44332211) {
     fprintf(stderr, "The endianness of this machine is strange (or database is corrupt)\n");
     unlock_and_exit(2);
   }
   /* }}} */
 
 #define GET_TABLE(dest, start_index, table_size) {\
-  unsigned int table_offset = uidata[(start_index)];\
-  if ((table_offset + (table_size)) > uioffset_max) goto corrupt;\
+  uint64_t table_offset = rd_header_slot(uidata, (start_index));\
+  if ((table_offset + 2 * (uint64_t) (table_size)) > uioffset_max) goto corrupt;\
+  (dest) = uidata + table_offset;\
+}
+/* Tables holding only 32-bit values (message tids, mbox entry counts)
+ * occupy table_size words, not 2*table_size. */
+#define GET_TABLE_1X(dest, start_index, table_size) {\
+  uint64_t table_offset = rd_header_slot(uidata, (start_index));\
+  if ((table_offset + (uint64_t) (table_size)) > uioffset_max) goto corrupt;\
   (dest) = uidata + table_offset;\
 }
 #define GET_MSG_TABLE(dest, start_index) GET_TABLE((dest), (start_index), result->n_msgs)
 #define GET_MBOX_TABLE(dest, start_index) GET_TABLE((dest), (start_index), result->n_mboxen)
 
   /* Now build tables of where things are in the file */
-  result->n_msgs = uidata[UI_N_MSGS];
-  result->msg_type_and_flags = ucdata + uidata[UI_MSG_TYPE_AND_FLAGS];
+  /* Now build tables of where things are in the file */
+  result->n_msgs = (int) rd_header_slot(uidata, UI_N_MSGS);
+  result->msg_type_and_flags = ucdata + (size_t) rd_header_slot(uidata, UI_MSG_TYPE_AND_FLAGS);
   if (0 && (
     (result->msg_type_and_flags + result->n_msgs) >
     (ucdata + len)
@@ -247,19 +261,27 @@ corrupt:
     unlock_and_exit(2);
   }
   GET_MSG_TABLE(result->path_offsets, UI_MSG_CDATA);
+  result->path_offsets_hi = result->path_offsets + result->n_msgs;
   GET_MSG_TABLE(result->mtime_table, UI_MSG_MTIME);
+  result->mtime_hi_table = result->mtime_table + result->n_msgs;
   GET_MSG_TABLE(result->size_table, UI_MSG_SIZE);
+  result->size_hi_table = result->size_table + result->n_msgs;
   GET_MSG_TABLE(result->date_table, UI_MSG_DATE);
-  GET_MSG_TABLE(result->tid_table, UI_MSG_TID);
+  result->date_hi_table = result->date_table + result->n_msgs;
+  GET_TABLE_1X(result->tid_table, UI_MSG_TID, result->n_msgs);
 
-  result->n_mboxen = uidata[UI_MBOX_N];
+  result->n_mboxen = (int) rd_header_slot(uidata, UI_MBOX_N);
   GET_MBOX_TABLE(result->mbox_paths_table, UI_MBOX_PATHS);
-  GET_MBOX_TABLE(result->mbox_entries_table, UI_MBOX_ENTRIES);
+  result->mbox_paths_hi_table = result->mbox_paths_table + result->n_mboxen;
+  GET_TABLE_1X(result->mbox_entries_table, UI_MBOX_ENTRIES, result->n_mboxen);
   GET_MBOX_TABLE(result->mbox_mtime_table, UI_MBOX_MTIME);
+  result->mbox_mtime_hi_table = result->mbox_mtime_table + result->n_mboxen;
   GET_MBOX_TABLE(result->mbox_size_table, UI_MBOX_SIZE);
+  result->mbox_size_hi_table = result->mbox_size_table + result->n_mboxen;
   GET_MBOX_TABLE(result->mbox_checksum_table, UI_MBOX_CKSUM);
+  result->mbox_checksum_hi_table = result->mbox_checksum_table + result->n_mboxen;
 
-  result->hash_key = uidata[UI_HASH_KEY];
+  result->hash_key = (unsigned int) rd_header_slot(uidata, UI_HASH_KEY);
 
   if (!(
     read_toktable_db(data, len, &result->to, UI_TO_BASE, uidata) &&

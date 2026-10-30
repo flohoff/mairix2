@@ -22,16 +22,22 @@ Valid commands are (listed alphabetically):
   assert_dump
   assert_match
   assert_no_more_matches
+  conf_add_mbox_glob
   conf_set_mformat
   dump_database
+  index_database
   log_remaining_matched_unasserted_messages
   purge_database
   remove_messages
+  run_generator
+  run_mairix_expect_failure
   search_messages
+  search_messages_no_dump
 
 Sorted by functions's purpose, we may break above list down into:
   - Commands for managing the configuration file
        conf_set_mformat
+       conf_add_mbox_glob
 
   - Commands for managing the database
        add_messages
@@ -42,9 +48,14 @@ Sorted by functions's purpose, we may break above list down into:
 
   - Commands for message matching
        search_messages
+       search_messages_no_dump
        assert_match
        assert_no_more_matches
        log_remaining_matched_unasserted_messages
+
+  - Commands for building fixtures and for failure checks
+       run_generator
+       run_mairix_expect_failure
 
 
 
@@ -58,6 +69,21 @@ Sorted by functions's purpose, we may break above list down into:
 | messages shall be presented) of the mairix configuration file to FORMAT.
 | FORMAT can be either maildir, mh, or box. This parameter does not affect
 | the previously conducted search, but only the upcoming searches.
++--------------------------------------------------------------------------
+
+
++--------------------------------------------------------------------------
+| conf_add_mbox_glob GLOB
++--------------------------------------------------------------------------
+| adds an mbox path or wildcard to the mairix configuration file, and
+| regenerates it. In contrast to conf_add_mbox (which is reached via
+| add_messages and copies messages into the test's data directory), the
+| entry is passed to mairix verbatim. This allows configuring large
+| numbers of mbox files with a single (wildcard) entry, without
+| materializing them through add_messages.
+|
+| Only the containing directory of GLOB is asserted to exist; the matched
+| files are checked by mairix itself.
 +--------------------------------------------------------------------------
 
 
@@ -156,6 +182,19 @@ Sorted by functions's purpose, we may break above list down into:
 
 
 +--------------------------------------------------------------------------
+| search_messages_no_dump EXPR1 EXPR2 EXPR3 ...
++--------------------------------------------------------------------------
+| Runs a mairix search using EXPR1 EXPR2 EXPR3 on the database, without
+| asserting the state of the database via a dump afterwards.
+|
+| This variant of search_messages is meant for tests whose database is too
+| large for a golden dump (e.g. tests of the limits on the number of
+| messages and mboxen). The assertions about the search's outcome are made
+| with assert_match and assert_no_more_matches only.
++--------------------------------------------------------------------------
+
+
++--------------------------------------------------------------------------
 | assert_match FORMAT MESSAGE
 +--------------------------------------------------------------------------
 | asserts that the previously conducted search matched the given message.
@@ -196,6 +235,45 @@ Sorted by functions's purpose, we may break above list down into:
 | the previous search, but have not yet been asserted using assert_match.
 |
 | This function is mainly useful when developing new tests.
++--------------------------------------------------------------------------
+
+
+* Commands for building fixtures and for failure checks ====================
+
++--------------------------------------------------------------------------
+| index_database
++--------------------------------------------------------------------------
+| runs an indexing pass over all folders configured in the mairix rc file,
+| creating the database if it does not exist yet. This is the way to index
+| folders that have been configured with conf_add_mbox_glob, without
+| materializing them through add_messages.
+|
+| No dump assertion is made; use assert_dump afterwards to check the state
+| of the database.
++--------------------------------------------------------------------------
+
+
++--------------------------------------------------------------------------
+| run_generator SCRIPT ARG1 ARG2 ...
++--------------------------------------------------------------------------
+| Runs the fixture generator script SCRIPT from the scripts subdirectory of
+| the base directory, with the current directory set to the test's data
+| directory. This allows test specifications to build synthetic fixtures
+| (e.g. huge synthetic mboxen, or databases in a superseded on-disk
+| format) inside their own data directory.
+|
+| For safety, only scripts whose name matches prepare_*.sh may be run.
++--------------------------------------------------------------------------
+
+
++--------------------------------------------------------------------------
+| run_mairix_expect_failure EXPECTED_SUBSTRING ARG1 ARG2 ...
++--------------------------------------------------------------------------
+| Runs mairix with the given arguments, and requires that it exits with a
+| non-zero exit code and that its output contains EXPECTED_SUBSTRING. The
+| database file is asserted to be unchanged, so this also detects a
+| database that is silently misread (e.g. after a change of the on-disk
+| format) instead of being refused.
 +--------------------------------------------------------------------------
 
 

@@ -451,7 +451,7 @@ static char *looking_at_ws_then_newline(char *start)/*{{{*/
 }
 /*}}}*/
 
-static char *unencode_data(struct msg_src *src, char *input, int input_len, const char *enc, int *output_len)/*{{{*/
+static char *unencode_data(struct msg_src *src, char *input, size_t input_len, const char *enc, size_t *output_len)/*{{{*/
 {
   enum encoding_type encoding;
   char *result, *end_result;
@@ -672,20 +672,20 @@ static int split_and_splice_header(struct msg_src *src, char *data, size_t data_
 /*}}}*/
 
 /* Forward prototypes */
-static void do_multipart(struct msg_src *src, char *input, int input_len,
+static void do_multipart(struct msg_src *src, char *input, size_t input_len,
     const char *boundary, struct attachment *atts,
     enum data_to_rfc822_error *error);
 
 /*{{{ do_body() */
 static void do_body(struct msg_src *src,
-    char *body_start, int body_len,
+    char *body_start, size_t body_len,
     struct nvp *ct_nvp, struct nvp *cte_nvp,
     struct nvp *cd_nvp,
     struct attachment *atts,
     enum data_to_rfc822_error *error)
 {
   char *decoded_body;
-  int decoded_body_len;
+  size_t decoded_body_len;
   const char *content_transfer_encoding;
   content_transfer_encoding = NULL;
   if (cte_nvp) {
@@ -843,7 +843,7 @@ static void do_attachment(struct msg_src *src,
 /*}}}*/
 /*{{{ do_multipart() */
 static void do_multipart(struct msg_src *src,
-    char *input, int input_len,
+    char *input, size_t input_len,
     const char *boundary,
     struct attachment *atts,
     enum data_to_rfc822_error *error)
@@ -1002,7 +1002,7 @@ static void scan_status_flags(const char *s, struct headers *hdrs)/*{{{*/
 
 /*{{{ data_to_rfc822() */
 struct rfc822 *data_to_rfc822(struct msg_src *src,
-    char *data, int length,
+    char *data, size_t length,
     enum data_to_rfc822_error *error)
 {
   struct rfc822 *result;
@@ -1010,7 +1010,7 @@ struct rfc822 *data_to_rfc822(struct msg_src *src,
   struct line header;
   struct line *x, *nx;
   struct nvp *ct_nvp, *cte_nvp, *cd_nvp, *nvp;
-  int body_len;
+  size_t body_len;
 
   ct_nvp = cte_nvp = cd_nvp = NULL;
   if (error) *error = DTR8_OK; /* default */
@@ -1306,7 +1306,7 @@ static struct ro_mapping *add_ro_cache(const char *filename, int fd, size_t len)
 }
 #endif /* USE_GZIP_MBOX || USE_BZIP_MBOX || USE_XZ_MBOX */
 
-void create_ro_mapping(const char *filename, unsigned char **data, int *len, enum ro_map_compressed_behaviour cb)/*{{{*/
+void create_ro_mapping(const char *filename, unsigned char **data, size_t *len, enum ro_map_compressed_behaviour cb)/*{{{*/
 {
   struct stat sb;
   int fd;
@@ -1433,7 +1433,7 @@ comp_error:
   data_alloc_type = ALLOC_MMAP;
 }
 /*}}}*/
-void free_ro_mapping(unsigned char *data, int len)/*{{{*/
+void free_ro_mapping(unsigned char *data, size_t len)/*{{{*/
 {
   int r;
 
@@ -1461,7 +1461,7 @@ static struct msg_src *setup_msg_src(char *filename)/*{{{*/
 /*}}}*/
 struct rfc822 *make_rfc822(char *filename)/*{{{*/
 {
-  int len;
+  size_t len;
   unsigned char *data;
   struct rfc822 *result;
 

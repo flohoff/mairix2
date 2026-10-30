@@ -1,0 +1,78 @@
+Dump of database
+3 messages
+     0: MBOX 0, msg 0, offset=42, size=4299999959, tid=0
+     1: MBOX 0, msg 1, offset=4300000043, size=133, tid=1
+     2: MBOX 0, msg 2, offset=4300000218, size=133, tid=2
+
+
+MBOX INFORMATION
+1 mboxen
+   0: 3 msgs in messages/mbox/huge.mbox
+
+Hash key 00000001
+
+--------------------------------
+Contents of <To> table
+4 entries
+Word 0 : <com>
+  0 1 2 
+Word 1 : <example>
+  0 1 2 
+Word 2 : <watcher@example.com>
+  0 1 2 
+Word 3 : <watcher>
+  0 1 2 
+--------------------------------
+Contents of <Cc> table
+0 entries
+--------------------------------
+Contents of <From> table
+8 entries
+Word 0 : <com>
+  0 1 2 
+Word 1 : <example>
+  0 1 2 
+Word 2 : <sender2>
+  2 
+Word 3 : <sender0>
+  0 
+Word 4 : <sender1@example.com>
+  1 
+Word 5 : <sender2@example.com>
+  2 
+Word 6 : <sender0@example.com>
+  0 
+Word 7 : <sender1>
+  1 
+--------------------------------
+Contents of <Subject> table
+6 entries
+Word 0 : <test>
+  0 1 2 
+Word 1 : <offsets>
+  0 1 2 
+Word 2 : <msg2>
+  2 
+Word 3 : <huge>
+  0 1 2 
+Word 4 : <msg0>
+  0 
+Word 5 : <msg1>
+  1 
+--------------------------------
+Contents of <Body> table
+2 entries
+Word 0 : <hugemsgone>
+  1 
+Word 1 : <hugemsgtwo>
+  2 
+--------------------------------
+Contents of <Attachment names> table
+0 entries
+--------------------------------
+Contents of <Message Ids> table
+Chain 0
+0 entries
+Chain 1
+0 entries
+--------------------------------

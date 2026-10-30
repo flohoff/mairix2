@@ -107,7 +107,14 @@ void compute_checksum(const char *data, size_t len, checksum_t *csum)/*{{{*/
 {
   MD5_CTX md5;
   MD5Init(&md5);
-  MD5Update(&md5, (unsigned char *) data, len);
+  /* MD5Update's length is 32-bit; chunk large messages (md5 state tracks
+   * total length across calls). */
+  while (len > 0) {
+    unsigned int chunk = (len > 0x20000000u) ? 0x20000000u : (unsigned int) len;
+    MD5Update(&md5, (unsigned char *) data, chunk);
+    data += chunk;
+    len -= chunk;
+  }
   MD5Final(&md5);
   memcpy(csum, md5.digest, sizeof(md5.digest));
   return;
@@ -206,7 +213,7 @@ static void init_scantabs(void)/*{{{*/
 
 #undef DEBUG_DFA
 
-static int looks_like_from_separator(off_t n, char *va, size_t len, int verbose)/*{{{*/
+static int looks_like_from_separator(uint64_t n, char *va, size_t len, int verbose)/*{{{*/
 {
   char p;
   int current_state = 0;
@@ -241,7 +248,7 @@ static int looks_like_from_separator(off_t n, char *va, size_t len, int verbose)
 }
 /*}}}*/
 
-static off_t find_next_from(off_t n, char *va, size_t len)/*{{{*/
+static uint64_t find_next_from(uint64_t n, char *va, size_t len)/*{{{*/
 {
   unsigned char c;
   unsigned long hit;
@@ -280,7 +287,7 @@ scan_again:
   return -1;
 }
 /*}}}*/
-static off_t start_of_next_line(off_t n, char *va, size_t len)/*{{{*/
+static uint64_t start_of_next_line(uint64_t n, char *va, size_t len)/*{{{*/
 {
   unsigned char c;
   /* We are always starting from 'From ' so we can advance before testing */
@@ -297,7 +304,7 @@ static off_t start_of_next_line(off_t n, char *va, size_t len)/*{{{*/
 }
 /*}}}*/
 
-static off_t find_next_mmdfsep(off_t n, char *va, size_t len)/*{{{*/
+static uint64_t find_next_mmdfsep(uint64_t n, char *va, size_t len)/*{{{*/
 {
   unsigned char c;
   /* Start in "just read a newline" state since we're always called at
@@ -316,7 +323,7 @@ static off_t find_next_mmdfsep(off_t n, char *va, size_t len)/*{{{*/
   return -1;
 }
 /*}}}*/
-static off_t skip_mmdfsep(off_t n, char *va, size_t len)/*{{{*/
+static uint64_t skip_mmdfsep(uint64_t n, char *va, size_t len)/*{{{*/
 {
   /* Just expect an immediate second MMDF separator. */
   return n + 5 <= len && ! strncmp(va + n, "\1\1\1\1\n", 5) ? n + 5 : -1;
@@ -327,12 +334,12 @@ static off_t skip_mmdfsep(off_t n, char *va, size_t len)/*{{{*/
 static struct message_list *build_new_message_list(struct mbox *mb, char *va, size_t len, int *n_messages)/*{{{*/
 {
   struct message_list *result, *here, *next;
-  off_t start_from, start_pos, end_from;
+  uint64_t start_from, start_pos, end_from;
   int old_percent = -100;
   int N;
   int mmdf;
-  off_t (*message_start)(off_t n, char *va, size_t len);
-  off_t (*find_next_separator)(off_t n, char *va, size_t len);
+  uint64_t (*message_start)(uint64_t n, char *va, size_t len);
+  uint64_t (*find_next_separator)(uint64_t n, char *va, size_t len);
 
 #define PERCENT_GRAN 2
 
@@ -601,6 +608,11 @@ done_this_dir:
   return appended_any;
 }
 /*}}}*/
+static int compare_strings(const void *a, const void *b)/*{{{*/
+{
+  return strcmp(*((const char **) a), *((const char **) b));
+}
+/*}}}*/
 static void handle_wild(char *path, int base_len, char *last_comp, struct string_list *list,/*{{{*/
                         int (*append)(char *, int, struct stat *, struct string_list *,
                               const struct traverse_methods *, struct globber_array *),
@@ -613,6 +625,12 @@ static void handle_wild(char *path, int base_len, char *last_comp, struct string
   DIR *d;
   struct dirent *de;
   int had_matches;
+  /* Matches are collected and sorted before being appended, so that the
+   * expansion order (and thus the database layout) is deterministic rather
+   * than depending on readdir() order. */
+  char **matches;
+  int i, n_matches, max_matches;
+  struct stat xsb;
 
   gg = make_globber(last_comp);
 
@@ -630,12 +648,14 @@ static void handle_wild(char *path, int base_len, char *last_comp, struct string
 
   d = opendir(temp_path);
   had_matches = 0;
+  n_matches = 0;
+  max_matches = 256;
+  matches = new_array(char *, max_matches);
   if (d) {
     while ((de = readdir(d))) {
       if (!strcmp(de->d_name, ".")) continue;
       if (!strcmp(de->d_name, "..")) continue;
       if (is_glob_match(gg, de->d_name)) {
-        struct stat xsb;
         strcpy(xpath, temp_path);
         strcat(xpath, "/");
         strcat(xpath, de->d_name);
@@ -644,18 +664,29 @@ static void handle_wild(char *path, int base_len, char *last_comp, struct string
            * a recursive expansion of a tree that's going to get pruned in full
            * later anyway. */
           had_matches = 1;
-          if (stat(xpath, &xsb) >= 0) {
-            (*append)(xpath, base_len, &xsb, list, methods, omit_globs);
+          if (n_matches == max_matches) {
+            max_matches <<= 1;
+            matches = grow_array(char *, max_matches, matches);
           }
+          matches[n_matches++] = new_string(xpath);
         }
       }
     }
     closedir(d);
+    qsort(matches, n_matches, sizeof(char *), compare_strings);
+    for (i=0; i<n_matches; i++) {
+      if (stat(matches[i], &xsb) >= 0) {
+        (*append)(matches[i], base_len, &xsb, list, methods, omit_globs);
+      }
+      free(matches[i]);
+    }
+    free(matches);
     if (!had_matches) {
       fprintf(stderr, "WARNING: Wildcard \"%s\" matched nothing in %s\n", last_comp, temp_path);
     }
   } else {
     fprintf(stderr, "WARNING: Folder path %s does not exist\n", temp_path);
+    free(matches);
   }
 
 
@@ -873,7 +904,7 @@ void build_mbox_lists(struct database *db, const char *folder_base, /*{{{*/
         mb->n_old_msgs_valid = mb->n_msgs;
       } else {
         unsigned char *va;
-        int len;
+        size_t len;
         create_ro_mapping(mb->path, &va, &len, MAP_DECOMPRESS_IF_APPLICABLE);
         if (va) {
           rescan_mbox(mb, (char *) va, len);
@@ -893,7 +924,7 @@ void build_mbox_lists(struct database *db, const char *folder_base, /*{{{*/
 }
 /*}}}*/
 
-static struct msg_src *setup_msg_src(char *filename, off_t start, size_t len)/*{{{*/
+static struct msg_src *setup_msg_src(char *filename, uint64_t start, uint64_t len)/*{{{*/
 {
   static struct msg_src result;
   result.type = MS_MBOX;
@@ -909,7 +940,7 @@ int add_mbox_messages(struct database *db)/*{{{*/
   int any_new = 0;
   int N;
   unsigned char *va;
-  int valen;
+  size_t valen;
   enum data_to_rfc822_error error;
 
   for (i=0; i<db->n_mboxen; i++) {
@@ -922,8 +953,8 @@ int add_mbox_messages(struct database *db)/*{{{*/
       N = mb->n_old_msgs_valid + mb->n_new_msgs;
       if (N > mb->max_msgs) {
         mb->max_msgs = N;
-        mb->start = grow_array(off_t, N, mb->start);
-        mb->len = grow_array(size_t, N, mb->len);
+        mb->start = grow_array(uint64_t, N, mb->start);
+        mb->len = grow_array(uint64_t, N, mb->len);
         mb->check_all = grow_array(checksum_t, N, mb->check_all);
       }
 
@@ -931,8 +962,8 @@ int add_mbox_messages(struct database *db)/*{{{*/
       for (j=mb->n_old_msgs_valid, here=mb->new_msgs; here; j++, here=next) {
         int n;
         int trials = 0;
-        off_t start;
-        size_t len;
+        uint64_t start;
+        uint64_t len;
         struct rfc822 *r8;
         struct msg_src *msg_src;
         struct message_list *last, *xx, *xn;
@@ -1009,7 +1040,7 @@ int add_mbox_messages(struct database *db)/*{{{*/
 
         if (r8) {
           if (verbose) {
-            printf("Scanning %s[%d] at [%d,%d)\n", mb->path, j, (int)start, (int)(start + len));
+            printf("Scanning %s[%d] at [%lld,%lld)\n", mb->path, j, (long long) start, (long long) (start + len));
           }
           db->msgs[n].date = r8->hdrs.date;
           db->msgs[n].seen = r8->hdrs.flags.seen;
@@ -1018,7 +1049,7 @@ int add_mbox_messages(struct database *db)/*{{{*/
           tokenise_message(n, db, r8);
           free_rfc822(r8);
         } else {
-          printf("Message in %s at [%d,%d) is misformatted\n", mb->path, (int)start, (int)(start + len));
+          printf("Message in %s at [%lld,%lld) is misformatted\n", mb->path, (long long) start, (long long) (start + len));
         }
 
         ++db->n_msgs;
@@ -1082,36 +1113,34 @@ void cull_dead_mboxen(struct database *db)/*{{{*/
 }
 /*}}}*/
 
-char *encode_mbox_indices(char *cdata, unsigned int mb, unsigned int msg)/*{{{*/
+uint64_t encode_mbox_indices(unsigned int mb, unsigned int msg)/*{{{*/
 {
-  struct encoded_mbox_indices result;
-  result.mb = mb;
-  result.msg = msg;
-  memcpy(cdata, &result, sizeof(result));
-  return cdata + sizeof(result);
+  /* mbox index in the lo word, message index in the hi word */
+  uint64_t result;
+  result = ((uint64_t) mb) | (((uint64_t) msg) << 32);
+  return result;
 }
 /*}}}*/
-void decode_mbox_indices(char *cdata, unsigned int *mb, unsigned int *msg)/*{{{*/
+void decode_mbox_indices(uint64_t index, unsigned int *mb, unsigned int *msg)/*{{{*/
 {
-  struct encoded_mbox_indices encoded;
-  memcpy(&encoded, cdata, sizeof(encoded));
-  *mb = encoded.mb;
-  *msg = encoded.msg;
+  *mb = (unsigned int) (index & 0xffffffffull);
+  *msg = (unsigned int) (index >> 32);
 }
 /*}}}*/
 int verify_mbox_size_constraints(struct database *db)/*{{{*/
 {
   int i;
   int fail;
-  if (db->n_mboxen > UINT32_MAX) {
-    fprintf(stderr, "Too many mboxes (max %d, you have %d)\n", UINT32_MAX, db->n_mboxen);
+  /* The on-disk encoding gives each index a full 32-bit word. */
+  if ((uint64_t) db->n_mboxen >= (1ull << 32)) {
+    fprintf(stderr, "Too many mboxes (max %u, you have %d)\n", 0xffffffffu, db->n_mboxen);
     return 0;
   }
   fail = 0;
   for (i=0; i<db->n_mboxen; i++) {
-    if (db->mboxen[i].n_msgs > UINT32_MAX) {
-      fprintf(stderr, "Too many messages in mbox %s (max %d, you have %d)\n",
-              db->mboxen[i].path, UINT32_MAX, db->mboxen[i].n_msgs);
+    if ((uint64_t) db->mboxen[i].n_msgs >= (1ull << 32)) {
+      fprintf(stderr, "Too many messages in mbox %s (max %u, you have %d)\n",
+              db->mboxen[i].path, 0xffffffffu, db->mboxen[i].n_msgs);
       fail = 1;
     }
   }

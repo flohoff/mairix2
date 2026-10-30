@@ -65,7 +65,7 @@ struct msgpath {/*{{{*/
   union {
     struct {
       char *path;
-      size_t size;  /* size of the message in bytes */
+      uint64_t size;  /* size of the message in bytes */
       time_t mtime; /* mtime of message file on disc */
     } mpf; /* message per file */
     struct {
@@ -153,7 +153,7 @@ struct attachment {/*{{{*/
   char *filename;
   union attachment_body {
     struct normal_attachment_body {
-      int len;
+      size_t len;
       char *bytes;
     } normal;
     struct rfc822 *rfc822;
@@ -190,8 +190,8 @@ typedef char checksum_t[16];
 
 struct message_list {/*{{{*/
   struct message_list *next;
-  off_t start;
-  size_t len;
+  uint64_t start;
+  uint64_t len;
 };
 /*}}}*/
 struct mbox {/*{{{*/
@@ -200,10 +200,10 @@ struct mbox {/*{{{*/
   char *path;
   /* As read in from database (i.e. current last time mairix scan was run.) */
   time_t file_mtime;
-  size_t file_size;
+  uint64_t file_size;
   /* As found in the filesystem now. */
   time_t current_mtime;
-  size_t current_size;
+  uint64_t current_size;
   /* After reconciling a loaded database with what's on the disc, this entry
      stores how many of the msgs that used to be there last time are still
      present at the head of the file.  Thus, all messages beyond that are
@@ -221,10 +221,10 @@ struct mbox {/*{{{*/
 
   int n_msgs;   /* Number of entries in 'start' and 'len' */
   int max_msgs; /* Allocated size of 'start' and 'len' */
-  /* File offset to the start of each message (first line of real header, not to mbox 'From ' line) */
-  off_t *start;
+  /* Byte offset to the start of each message (first line of real header, not to mbox 'From ' line) */
+  uint64_t *start;
   /* Length of each message */
-  size_t *len;
+  uint64_t *len;
   /* Checksums on whole messages. */
   checksum_t *check_all;
 
@@ -275,8 +275,8 @@ struct string_list {/*{{{*/
 struct msg_src {
   enum {MS_FILE, MS_MBOX} type;
   char *filename;
-  off_t start;
-  size_t len;
+  uint64_t start;
+  uint64_t len;
 };
 
 /* Outcomes of checking a filename/dirname to see whether to keep on looking
@@ -341,13 +341,13 @@ enum data_to_rfc822_error {
   DTR8_BAD_HEADERS, /* corrupt headers */
   DTR8_BAD_ATTACHMENT /* corrupt attachment (e.g. no body part) */
 };
-struct rfc822 *data_to_rfc822(struct msg_src *src, char *data, int length, enum data_to_rfc822_error *error);
+struct rfc822 *data_to_rfc822(struct msg_src *src, char *data, size_t length, enum data_to_rfc822_error *error);
 enum ro_map_compressed_behaviour {
   MAP_DECOMPRESS_IF_APPLICABLE,
   MAP_NO_DECOMPRESSION
 };
-void create_ro_mapping(const char *filename, unsigned char **data, int *len, enum ro_map_compressed_behaviour cb);
-void free_ro_mapping(unsigned char *data, int len);
+void create_ro_mapping(const char *filename, unsigned char **data, size_t *len, enum ro_map_compressed_behaviour cb);
+void free_ro_mapping(unsigned char *data, size_t len);
 char *format_msg_src(struct msg_src *src);
 
 /* In tok.c */
@@ -381,16 +381,8 @@ void build_mbox_lists(struct database *db, const char *folder_base,
 int add_mbox_messages(struct database *db);
 void compute_checksum(const char *data, size_t len, checksum_t *csum);
 void cull_dead_mboxen(struct database *db);
-
-struct encoded_mbox_indices {
-  uint32_t mb;
-  uint32_t msg;
-};
-/* Encode the mbox indices as a struct encoded_mbox_indices at cdata,
-   returning an updated pointer to just after what we wrote */
-char *encode_mbox_indices(char *cdata, unsigned int mb, unsigned int msg);
-void decode_mbox_indices(char *cdata, unsigned int *mb, unsigned int *msg);
-
+uint64_t encode_mbox_indices(unsigned int mb, unsigned int msg);
+void decode_mbox_indices(uint64_t index, unsigned int *mb, unsigned int *msg);
 int verify_mbox_size_constraints(struct database *db);
 void glob_and_expand_paths(const char *folder_base, char **paths_in, int n_in, char ***paths_out, int *n_out, const struct traverse_methods *methods, struct globber_array *omit_globs);
 void free_mboxen(struct database *db);

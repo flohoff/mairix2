@@ -1,0 +1,26 @@
+# Byte offsets beyond the range of 32-bit values: an mbox in which the
+# messages' byte offsets and sizes exceed 2^31 and 2^32.
+#
+# The mbox holds three messages:
+#   msg 0 : offset 42, size ~4.3 GiB (the size exceeds 2^31; the body is a
+#           sparse hole reading back as zero bytes)
+#   msg 1 : offset ~4.3e9 (exceeds 2^32)
+#   msg 2 : offset ~4.3e9 (exceeds 2^32)
+#
+# msg 1 and msg 2 carry unique body markers (hugemsgone, hugemsgtwo). The
+# searches below have to match exactly one message each, read back from the
+# mbox at the (64-bit) offset stored in the database. The dump assertions
+# cover the stored 64-bit sizes and offsets of all three messages.
+#
+# Note: indexing the ~4.3 GiB (sparse) body takes on the order of half a
+# minute, so this test takes a while.
+run_generator prepare_mbox_huge_offsets.sh messages/mbox/huge.mbox
+conf_add_mbox_glob messages/mbox/huge.mbox
+
+# indexing run (the purge is a no-op here) + dump assertion
+purge_database limits-huge-offsets
+
+# the message stored beyond the 4 GiB boundary
+search_messages limits-huge-offsets hugemsgtwo
+assert_match mbox huge.mbox/part.2
+assert_no_more_matches

@@ -37,7 +37,7 @@
 #include "reader.h"
 #include "memmac.h"
 
-static void dump_token_chain(struct read_db *db, unsigned int n, unsigned int *tok_offsets, unsigned int *enc_offsets)
+static void dump_token_chain(struct read_db *db, unsigned int n, unsigned int *tok_offsets, unsigned int *tok_offsets_hi, unsigned int *enc_offsets, unsigned int *enc_offsets_hi)
 {
   int i, j;
   int on_line;
@@ -45,13 +45,13 @@ static void dump_token_chain(struct read_db *db, unsigned int n, unsigned int *t
   struct int_list_reader ilr;
   printf("%d entries\n", n);
   for (i=0; i<n; i++) {
-    token = get_db_token(db, tok_offsets[i]);
+    token = get_db_token(db, rd_lo_hi(tok_offsets, tok_offsets_hi, i));
     if (token) {
       printf("Word %d : <%s>\n", i, token);
     } else {
       printf("Word %d is corrupt, lies beyond end of database\n", i);
     }
-    read_db_int_list_reader_init(&ilr, db, enc_offsets[i]);
+    read_db_int_list_reader_init(&ilr, db, rd_lo_hi(enc_offsets, enc_offsets_hi, i));
     on_line = 0;
     printf("  ");
     while (int_list_reader_read(&ilr, &j)) {
@@ -69,7 +69,7 @@ static void dump_token_chain(struct read_db *db, unsigned int n, unsigned int *t
 static void dump_toktable(struct read_db *db, struct toktable_db *tbl, const char *title)
 {
   printf("Contents of <%s> table\n", title);
-  dump_token_chain( db, tbl->n, tbl->tok_offsets, tbl->enc_offsets);
+  dump_token_chain( db, tbl->n, tbl->tok_offsets, tbl->tok_offsets_hi, tbl->enc_offsets, tbl->enc_offsets_hi);
 }
 
 static void dump_toktable2(struct read_db *db, struct toktable2_db *tbl, const char *title)
@@ -78,9 +78,9 @@ static void dump_toktable2(struct read_db *db, struct toktable2_db *tbl, const c
   n = tbl->n;
   printf("Contents of <%s> table\n", title);
   printf("Chain 0\n");
-  dump_token_chain( db, n, tbl->tok_offsets, tbl->enc0_offsets);
+  dump_token_chain( db, n, tbl->tok_offsets, tbl->tok_offsets_hi, tbl->enc0_offsets, tbl->enc0_offsets_hi);
   printf("Chain 1\n");
-  dump_token_chain( db, n, tbl->tok_offsets, tbl->enc1_offsets);
+  dump_token_chain( db, n, tbl->tok_offsets, tbl->tok_offsets_hi, tbl->enc1_offsets, tbl->enc1_offsets_hi);
 }
 
 void dump_database(char *filename)
@@ -99,20 +99,23 @@ void dump_database(char *filename)
         printf("DEAD");
         break;
       case DB_MSG_FILE:
-        printf("FILE %s, size=%d, tid=%d",
-               db->data + db->path_offsets[i], db->size_table[i], db->tid_table[i]);
+        printf("FILE %s, size=%lld, tid=%d",
+               db->data + rd_msg_path_offset(db, i),
+               (long long) rd_msg_size(db, i), db->tid_table[i]);
         break;
       case DB_MSG_IMAP:
         printf("IMAP %s, tid=%d",
-               db->data + db->path_offsets[i], db->tid_table[i]);
+               db->data + rd_msg_path_offset(db, i), db->tid_table[i]);
         break;
       case DB_MSG_MBOX:
         {
           unsigned int mbix, msgix;
-          decode_mbox_indices(db->data + db->path_offsets[i], &mbix, &msgix);
+          decode_mbox_indices(rd_msg_path_offset(db, i), &mbix, &msgix);
 
-          printf("MBOX %d, msg %d, offset=%d, size=%d, tid=%d",
-                 mbix, msgix, db->mtime_table[i], db->size_table[i], db->tid_table[i]);
+          printf("MBOX %d, msg %d, offset=%lld, size=%lld, tid=%d",
+                 mbix, msgix,
+                 (long long) rd_msg_start_or_mtime(db, i),
+                 (long long) rd_msg_size(db, i), db->tid_table[i]);
         }
         break;
     }
@@ -126,8 +129,8 @@ void dump_database(char *filename)
     printf("\nMBOX INFORMATION\n");
     printf("%d mboxen\n", db->n_mboxen);
     for (i=0; i<db->n_mboxen; i++) {
-      if (db->mbox_paths_table[i]) {
-        printf("%4d: %d msgs in %s\n", i, db->mbox_entries_table[i], db->data + db->mbox_paths_table[i]);
+      if (rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, i)) {
+        printf("%4d: %d msgs in %s\n", i, db->mbox_entries_table[i], db->data + rd_lo_hi(db->mbox_paths_table, db->mbox_paths_hi_table, i));
       } else {
         printf("%4d: dead\n", i);
       }

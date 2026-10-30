@@ -308,6 +308,48 @@ echo conf_add_mmdf "$@"
 }
 
 #--------------------------------------------------------------------------
+# adds an mbox to the mairix configuration, and regenerates the mairix rc
+# file. In contrast to conf_add_mbox, the argument may be a wildcard pattern
+# (or any other entry that mairix's folder path syntax supports, e.g. a
+# directory with a "..." suffix); it is passed to mairix verbatim. This
+# allows indexing large numbers of mbox files with a single configuration
+# entry.
+#
+# Note: This function does not add the messages to the database, but only
+# adds the entry to the configuration file.
+#--
+# $1 - an mbox path or wildcard, relative to ${DATA_DIR}
+#
+published_conf_add_mbox_glob () {
+    [[ $# -eq 1 ]] || error "conf_add_mbox_glob requires exactly one argument: an mbox path or wildcard, relative to the data directory."
+    local TO_ADD_GLOBD="$1"
+    # The containing directory has to exist (rc paths are relative to the
+    # rc file's base, which is the test's data directory). The matched
+    # files are checked by mairix itself.
+    local PARENT_DIR_RELD
+    PARENT_DIR_RELD="$(dirname "$TO_ADD_GLOBD")"
+    assert_file_exists_is_directory "$DATA_DIR_ABS/$PARENT_DIR_RELD"
+    CONF_MBOX="${CONF_MBOX}:${TO_ADD_GLOBD}"
+    generate_mairix_rc
+}
+
+#--------------------------------------------------------------------------
+# runs an indexing pass over all folders configured in the mairix rc file,
+# creating the database if it does not exist yet. This is the way to index
+# folders that have been configured with conf_add_mbox_glob, without
+# materializing them through add_messages.
+#
+# No dump assertion is made; use assert_dump afterwards to check the state
+# of the database.
+#--
+# <no parameters>
+#
+published_index_database () {
+    [[ $# -eq 0 ]] || error "index_database does not accept arguments."
+    update_database
+}
+
+#--------------------------------------------------------------------------
 # removes a maildir directory from the mairix configuration, and regenerates
 # the mairix rc file.
 #
@@ -519,6 +561,83 @@ published_add_messages() {
 }
 
 #--------------------------------------------------------------------------
+# runs a fixture generator script from the scripts directory, with the
+# current directory set to the data directory. This allows test
+# specifications to build synthetic fixtures (e.g. huge synthetic mboxen or
+# databases in a superseded on-disk format) inside their own data directory,
+# where they can then be referenced by conf_add_mbox_glob etc.
+#
+# Only scripts whose name matches prepare_*.sh may be run, to keep arbitrary
+# command execution out of the test specifications.
+#--
+# $1     - name of the generator script (must match prepare_*.sh)
+# $2 ... - arguments passed to the generator script
+#
+published_run_generator () {
+    [[ $# -ge 1 ]] || error "run_generator requires at least one argument: the name of a prepare_*.sh script."
+    local GENERATOR_NAME="$1"
+    shift
+
+    case "$GENERATOR_NAME" in
+	prepare_*.sh ) ;;
+	* ) error "run_generator only runs scripts named prepare_*.sh, not \"$GENERATOR_NAME\"" ;;
+    esac
+    assert_file_exists_is_file "${SCRIPT_DIR_ABS}/${GENERATOR_NAME}"
+
+    log "Running fixture generator" \"$GENERATOR_NAME "$@"\"
+    ( cd "$DATA_DIR_ABS" && "${SCRIPT_DIR_ABS}/${GENERATOR_NAME}" "$@" )
+}
+
+#--------------------------------------------------------------------------
+# runs mairix, expecting (and requiring) a non-zero exit code. The database
+# is asserted to be unchanged, so this also detects a database that is
+# silently misread (e.g. after a change of the on-disk format) instead of
+# being refused.
+#--
+# $1     - a substring that has to appear in mairix's output
+# $2 ... - the parameters passed to mairix
+#
+published_run_mairix_expect_failure () {
+    [[ $# -ge 2 ]] || error "run_mairix_expect_failure requires at least two arguments: an expected output substring and mairix arguments."
+    local EXPECTED_OUTPUT_SUBSTRING="$1"
+    shift
+
+    local DB_FILE_ABS="${DATA_DIR_ABS}/database"
+    assert_file_exists_is_file "$DB_FILE_ABS"
+    local DB_MD5_BEFORE DB_MD5_AFTER
+    DB_MD5_BEFORE="$(md5sum "$DB_FILE_ABS")"
+    DB_MD5_BEFORE="${DB_MD5_BEFORE%% *}"
+
+    log "Expecting mairix to fail: mairix $*"
+
+    set_file_variable_RELD MAIRIX_EXPECTED_FAILURE_OUTPUT "mairix_expected_failure_output"
+
+    if "$MAIRIX_EXE_FILE_RELB" \
+	--force-hash-key-new-database "$HASH_KEY" \
+	--rcfile "$MAIRIX_RC_FILE_ABS" \
+	"$@" >"$MAIRIX_EXPECTED_FAILURE_OUTPUT_FILE_ABS" 2>&1
+    then
+	cat "$MAIRIX_EXPECTED_FAILURE_OUTPUT_FILE_ABS" >&2
+	error "mairix succeeded, but should have failed on: mairix $*"
+    fi
+
+    log "mairix failed as expected:"
+    cat "$MAIRIX_EXPECTED_FAILURE_OUTPUT_FILE_ABS" >&5
+
+    if ! grep -q "$EXPECTED_OUTPUT_SUBSTRING" "$MAIRIX_EXPECTED_FAILURE_OUTPUT_FILE_ABS"
+    then
+	error "mairix's failure output does not contain \"$EXPECTED_OUTPUT_SUBSTRING\""
+    fi
+
+    DB_MD5_AFTER="$(md5sum "$DB_FILE_ABS")"
+    DB_MD5_AFTER="${DB_MD5_AFTER%% *}"
+    if [ "$DB_MD5_BEFORE" != "$DB_MD5_AFTER" ]
+    then
+	error "mairix modified the database although it should have refused to use it"
+    fi
+}
+
+#--------------------------------------------------------------------------
 # removes messages from the database and configuration file.
 # No purging is done
 #--
@@ -665,6 +784,72 @@ published_search_messages() {
 	    ;;
 	* )
 	    error "Unknown mformat used in search_message"
+	    ;;
+    esac
+}
+
+#--------------------------------------------------------------------------
+# searches for messages in the database, without asserting the validity of
+# the database via a dump afterwards.
+#
+# This variant of search_messages is meant for tests whose database is too
+# large for a golden dump (e.g. tests of the limits on the number of
+# messages and mboxen). The assertions about the search's outcome are made
+# with assert_match and assert_no_more_matches only.
+#--
+# $1, $2, ... - The search expressions in the format understood by mairix
+#
+published_search_messages_no_dump() {
+    [[ $# -ge 1 ]] || error "search_messages_no_dump requires at least one argument: a search expression."
+
+    log "Searching for (without dump assertion)" \""${@:1}"\"
+
+    # We assert that there are no more unasserted matches from the previous
+    # search (see published_search_messages for the reasoning).
+    published_assert_no_more_matches
+
+    # cleaning up the previous search result.
+    rm -rf "${SEARCH_RESULT_DIR_ABS}"
+    rm -rf "${SEARCH_RESULT_SPLIT_DIR_ABS}"
+
+    # It may be tempting for tests to tunnel commands through to mairix via
+    # searches, as for example:
+    #    search_messages_no_dump --purge
+    # We try to eliminate such uses, by forbidding search expressions starting
+    # in "-", if they do not refer to thread searching.
+    for PARAM in "${@:1}"
+    do
+	if [ "${PARAM:0:1}" = "-" -a "$PARAM" != "-t"  -a "$PARAM" != "--threads" ]
+	then
+	    error "Search pattern starts with \"-\". Do not try to sneak parameters to mairix through searches."
+	fi
+    done
+
+    # Perform the search. We briefly suspend stopping the whole test on an
+    # non-zero return value of mairix, as empty search results (which mairix
+    # reports by a non-zero return value) may be intended.
+    ABORT_ON_FAILING_MAIRIX=0
+    run_mairix "$MARKER_NO_DUMP" "$@"
+    ABORT_ON_FAILING_MAIRIX=1
+
+    # When asserting matched messages later on, it may be that the
+    # SEARCH_RESULT_FORMAT has already been changed by set_mformat. Hence, we
+    # need to keep track of the format used for the search.
+    USED_SEARCH_RESULT_FORMAT="$SEARCH_RESULT_FORMAT"
+
+    # Updating the array of messages that need to be asserted
+    MATCHED_NOT_YET_ASSERTED_MESSAGES=( )
+    case "$USED_SEARCH_RESULT_FORMAT" in
+	"maildir" | "mh" )
+	    MATCHED_NOT_YET_ASSERTED_MESSAGES=( $(find "${SEARCH_RESULT_DIR_ABS}" -type f -printf "file:%p " \, -type l -printf "link:%l ") )
+	    ;;
+	"mbox" )
+	    log "Splitting mbox of search result"
+	    "${SCRIPT_DIR_ABS}/split_mbox.sh" --split-to "${SEARCH_RESULT_SPLIT_DIR_ABS}" "${SEARCH_RESULT_DIR_ABS}"
+	    MATCHED_NOT_YET_ASSERTED_MESSAGES=( $(find "${SEARCH_RESULT_SPLIT_DIR_ABS}" -type f -printf "file:%p " \, -type l -printf "link:%l ") )
+	    ;;
+	* )
+	    error "Unknown mformat used in search_message_no_dump"
 	    ;;
     esac
 }
@@ -1230,12 +1415,18 @@ do
 		"assert_dump" | \
 		"assert_no_more_matches" | \
 		"assert_match" | \
+		"conf_add_mbox_glob" | \
+		"conf_add_mmdf" | \
 		"conf_set_mformat" | \
 		"dump_database" | \
+		"index_database" | \
 		"log_remaining_matched_unasserted_messages" | \
 		"purge_database" | \
 		"remove_messages" | \
-		"search_messages" )
+		"run_generator" | \
+		"run_mairix_expect_failure" | \
+		"search_messages" | \
+		"search_messages_no_dump" )
 		published_$COMMAND $OPTIONS
 		;;
 	    * )

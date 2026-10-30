@@ -1,0 +1,31 @@
+# 65537 mbox files, each with a single message: mbox indices beyond the
+# old 65536 half-word boundary of the (mbox index | message index) packing.
+#
+# The mboxes with numbers 0, 65535, 65536 and 65536 (= count-1, which
+# coincides with 65536 for this count) carry unique body markers, so each
+# of the searches below matches exactly one message out of the 65537
+# mboxen, on either side of the old boundary. The database dump for this
+# test would be several megabytes, so the searches run without dump
+# assertions and the assertions are the search results themselves.
+run_generator prepare_many_mboxes.sh messages/mbox/manymboxes 65537
+conf_add_mbox_glob messages/mbox/manymboxes/*
+index_database
+
+# an empty search on the fully indexed database
+search_messages_no_dump zzzznomatch
+assert_no_more_matches
+
+# mbox 0 (before the boundary)
+search_messages_no_dump mbxmarkerfirst
+assert_match mbox manymboxes/m000000/part.0
+assert_no_more_matches
+
+# mbox 65535 (the last index the old packing could represent)
+search_messages_no_dump mbxmarkerbeforeboundary
+assert_match mbox manymboxes/m065535/part.0
+assert_no_more_matches
+
+# mbox 65536 (the first index beyond the old boundary)
+search_messages_no_dump mbxmarkerafterboundary
+assert_match mbox manymboxes/m065536/part.0
+assert_no_more_matches

@@ -43,7 +43,7 @@ xzopen(const char *filename, const char *mode)
 {
   xzFile      *xzf;
   lzma_stream *lzs;
-  int          len;
+  size_t       len;
 
   if(filename == NULL || strcmp(mode, "rb") != 0)
     goto fail;
